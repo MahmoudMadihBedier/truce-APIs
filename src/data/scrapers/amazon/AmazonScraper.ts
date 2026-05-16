@@ -1,8 +1,14 @@
-import { chromium, Browser } from 'playwright-core';
+import chromium from '@sparticuz/chromium-min';
+import {
+  chromium as playwright,
+  Browser,
+  BrowserContext,
+  Page,
+} from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
 import { BaseScraper } from '../BaseScraper';
-import { Product } from '@/domain/entities/Product';
+import { Product } from '../../../domain/entities/Product';
 
 /**
  * Scraper for Amazon Egypt using Playwright
@@ -10,15 +16,16 @@ import { Product } from '@/domain/entities/Product';
 export class AmazonScraper extends BaseScraper {
   private readonly baseUrl = 'https://www.amazon.eg';
 
+  /**
+   * Scrapes Amazon search results
+   * @param category Search query or category path
+   */
   async scrape(category = '/s?k=coffee'): Promise<Product[]> {
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
-        browser = await chromium.launch({ headless: true });
-        const context = await browser.newContext({
-          userAgent: this.config.userAgent,
-          viewport: { width: 1280, height: 720 },
-        });
+        browser = await this.launchBrowser();
+        const context = await this.createContext(browser);
         const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
@@ -27,18 +34,11 @@ export class AmazonScraper extends BaseScraper {
           timeout: 60000,
         });
 
-        if (
-          response?.status() === 503 ||
-          (await page.title()).includes('Robot Check') ||
-          (await page.content()).includes('captcha')
-        ) {
-          throw new Error('Amazon blocked request (Captcha/530)');
-        }
+        await this.checkBlocked(page, response?.status());
 
-        // Wait for some results to be visible
         await page
           .waitForSelector('[data-component-type="s-search-result"]', {
-            timeout: 15000,
+            timeout: 10000,
           })
           .catch(() => {});
 
@@ -60,24 +60,25 @@ export class AmazonScraper extends BaseScraper {
     });
   }
 
+  /**
+   * Scrapes a single product page
+   * @param url Product URL
+   */
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
-        browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage({
-          userAgent: this.config.userAgent,
+        browser = await this.launchBrowser();
+        const context = await this.createContext(browser);
+        const page = await context.newPage();
+
+        const response = await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000,
         });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await this.checkBlocked(page, response?.status());
+
         const content = await page.content();
-
-        if (
-          (await page.title()).includes('Robot Check') ||
-          content.includes('captcha')
-        ) {
-          throw new Error('Amazon blocked request (Captcha)');
-        }
-
         const $ = cheerio.load(content);
         const product = this.normalize($);
         product.product_url = url;
@@ -88,10 +89,39 @@ export class AmazonScraper extends BaseScraper {
     });
   }
 
+  private async launchBrowser(): Promise<Browser> {
+    return await playwright.launch({
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+      proxy: this.config.proxyUrl
+        ? { server: this.config.proxyUrl }
+        : undefined,
+    });
+  }
+
+  private async createContext(browser: Browser): Promise<BrowserContext> {
+    return await browser.newContext({
+      userAgent: this.config.userAgent,
+      viewport: { width: 1280, height: 720 },
+    });
+  }
+
+  private async checkBlocked(page: Page, status?: number) {
+    const title = await page.title();
+    const content = await page.content();
+    if (
+      status === 503 ||
+      title.includes('Robot Check') ||
+      content.includes('captcha')
+    ) {
+      throw new Error('Amazon blocked request (Captcha/530)');
+    }
+  }
+
   private parseProduct($el: cheerio.Cheerio<Element>): Product | null {
     try {
-      const nameEl = $el.find('h2 span');
-      const name = nameEl.text().trim();
+      const name = $el.find('h2 span').text().trim();
       const relativeUrl = $el.find('h2 a').attr('href');
       const url = relativeUrl
         ? relativeUrl.startsWith('http')

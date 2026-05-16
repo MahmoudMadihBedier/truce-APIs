@@ -1,8 +1,9 @@
-import { chromium, Browser } from 'playwright-core';
+import chromium from '@sparticuz/chromium-min';
+import { chromium as playwright } from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
 import { BaseScraper } from '../BaseScraper';
-import { Product } from '@/domain/entities/Product';
+import { Product } from '../../../domain/entities/Product';
 
 /**
  * Scraper for Carrefour Egypt using Playwright
@@ -12,9 +13,13 @@ export class CarrefourScraper extends BaseScraper {
 
   async scrape(category = '/mafegy/en/c/FEGY1000000'): Promise<Product[]> {
     return this.withRetry(async () => {
-      let browser: Browser | null = null;
+      let browser = null;
       try {
-        browser = await chromium.launch({ headless: true });
+        browser = await playwright.launch({
+          args: chromium.args,
+          executablePath: await chromium.executablePath(),
+          headless: true,
+        });
         const context = await browser.newContext({
           userAgent: this.config.userAgent,
           viewport: { width: 1280, height: 720 },
@@ -48,9 +53,13 @@ export class CarrefourScraper extends BaseScraper {
 
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
-      let browser: Browser | null = null;
+      let browser = null;
       try {
-        browser = await chromium.launch({ headless: true });
+        browser = await playwright.launch({
+          args: chromium.args,
+          executablePath: await chromium.executablePath(),
+          headless: true,
+        });
         const page = await browser.newPage({
           userAgent: this.config.userAgent,
         });
