@@ -8,6 +8,8 @@ const NoonScraper_1 = require("../src/data/scrapers/noon/NoonScraper");
 /**
  * Executes a granular scraping task for a specific store and category.
  * Designed to be called by the orchestrator to stay within platform limits.
+ * @param req VercelRequest
+ * @param res VercelResponse
  */
 exports.default = async (req, res) => {
     if (req.method !== 'POST') {
@@ -45,7 +47,10 @@ exports.default = async (req, res) => {
         const products = await scraper.scrape(category_path);
         // Enrich with category metadata
         const enriched = category_name
-            ? products.map(p => ({ ...p, product_category: `${category_name} | ${p.product_category}` }))
+            ? products.map((p) => ({
+                ...p,
+                product_category: `${category_name} | ${p.product_category}`,
+            }))
             : products;
         await repository.saveAll(enriched);
         res.status(200).json({
@@ -54,7 +59,10 @@ exports.default = async (req, res) => {
         });
     }
     catch (error) {
-        console.error(`Scrape task failed for ${store}:`, error);
+        console.error(`Scrape task failed for ${store}:`, {
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : null,
+        });
         res.status(500).json({ error: 'Internal Server Error' });
     }
 };

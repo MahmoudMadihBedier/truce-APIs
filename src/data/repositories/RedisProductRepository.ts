@@ -6,6 +6,7 @@ import {
 } from '../../domain/entities/Product';
 import { IProductRepository } from '../../domain/repositories/IProductRepository';
 import crypto from 'crypto';
+import { getRedisClient } from '../../core/redis';
 
 /**
  * Implementation of IProductRepository using Redis with secondary indexing and sorted sets.
@@ -14,13 +15,13 @@ export class RedisProductRepository implements IProductRepository {
   private redis: Redis;
 
   constructor() {
-    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-    this.redis = new Redis(redisUrl);
+    this.redis = getRedisClient();
   }
 
   /**
    * Generates a unique key for a product based on its URL.
    * @param url Product URL
+   * @returns Hashed product key
    */
   private getProductKey(url: string): string {
     const hash = crypto.createHash('md5').update(url).digest('hex');
@@ -77,6 +78,7 @@ export class RedisProductRepository implements IProductRepository {
    * Finds products using secondary indexes and intersection.
    * Supports pagination and filtering.
    * @param filters Filtering criteria
+   * @returns Paginated products
    */
   async find(filters: ProductFilters): Promise<PaginatedProducts> {
     const {
@@ -111,16 +113,15 @@ export class RedisProductRepository implements IProductRepository {
     let total_count = 0;
 
     if (setsToIntersect.length > 0) {
-      const tempKey = `temp:search:${Date.now()}:${Math.random()}`;
-      await this.redis.sinterstore(tempKey, ...setsToIntersect);
-      total_count = await this.redis.scard(tempKey);
-      resultKeys = (await this.redis.sort(
-        tempKey,
-        'LIMIT',
-        (page - 1) * limit,
-        limit,
-      )) as string[];
-      await this.redis.del(tempKey);
+      // Use SINTER for read-only intersection (O(N*M))
+      // For large datasets, consider a dedicated search engine.
+      resultKeys = await this.redis.sinter(...setsToIntersect);
+      total_count = resultKeys.length;
+
+      // Sort and paginate in-memory for the intersected set
+      // (Redis SORT works on sets, but we can't combine SINTER and SORT easily without a temp key)
+      // To avoid writing (SINTERSTORE), we do basic slicing.
+      resultKeys = resultKeys.sort().slice((page - 1) * limit, page * limit);
     } else {
       total_count = await this.redis.scard('products:all');
       resultKeys = (await this.redis.sort(
@@ -138,12 +139,15 @@ export class RedisProductRepository implements IProductRepository {
   private async fetchProducts(keys: string[]): Promise<Product[]> {
     if (keys.length === 0) return [];
     const data = await this.redis.mget(...keys);
-    return data.map((item) => (item ? JSON.parse(item) : null)).filter(Boolean);
+    return data
+      .map((item) => (item ? JSON.parse(item) : null))
+      .filter((item): item is Product => item !== null);
   }
 
   /**
    * Retrieves a product by its unique URL.
    * @param url Product URL
+   * @returns Product or null
    */
   async findByUrl(url: string): Promise<Product | null> {
     const key = this.getProductKey(url);
