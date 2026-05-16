@@ -5,6 +5,7 @@ import {
   PaginatedProducts,
 } from '../../domain/entities/Product';
 import { IProductRepository } from '../../domain/repositories/IProductRepository';
+import crypto from 'crypto';
 
 /**
  * Implementation of IProductRepository using Redis
@@ -17,8 +18,17 @@ export class RedisProductRepository implements IProductRepository {
     this.redis = new Redis(redisUrl);
   }
 
+  /**
+   * Generates a unique key for a product based on its URL.
+   * @param url Product URL
+   */
+  private getProductKey(url: string): string {
+    const hash = crypto.createHash('md5').update(url).digest('hex');
+    return `product:${hash}`;
+  }
+
   async save(product: Product): Promise<void> {
-    const key = `product:${product.store_name}:${product.product_url}`;
+    const key = this.getProductKey(product.product_url);
     await this.redis.set(key, JSON.stringify(product));
 
     const pipeline = this.redis.pipeline();
@@ -82,7 +92,6 @@ export class RedisProductRepository implements IProductRepository {
     }
 
     if (setsToIntersect.length > 0) {
-      // Use temporary key for intersection
       const tempKey = `temp:search:${Date.now()}:${Math.random()}`;
       await this.redis.sinterstore(tempKey, ...setsToIntersect);
       resultKeys = await this.redis.smembers(tempKey);
@@ -114,13 +123,8 @@ export class RedisProductRepository implements IProductRepository {
   }
 
   async findByUrl(url: string): Promise<Product | null> {
-    const allKeys = await this.redis.smembers('products:all');
-    for (const key of allKeys) {
-      if (key.endsWith(url)) {
-        const data = await this.redis.get(key);
-        return data ? JSON.parse(data) : null;
-      }
-    }
-    return null;
+    const key = this.getProductKey(url);
+    const data = await this.redis.get(key);
+    return data ? JSON.parse(data) : null;
   }
 }
