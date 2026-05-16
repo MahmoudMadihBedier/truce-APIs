@@ -5,6 +5,11 @@ const JumiaScraper_1 = require("../src/data/scrapers/jumia/JumiaScraper");
 const AmazonScraper_1 = require("../src/data/scrapers/amazon/AmazonScraper");
 const CarrefourScraper_1 = require("../src/data/scrapers/carrefour/CarrefourScraper");
 const NoonScraper_1 = require("../src/data/scrapers/noon/NoonScraper");
+/**
+ * Product search and real-time scraping endpoint.
+ * @param req VercelRequest
+ * @param res VercelResponse
+ */
 exports.default = async (req, res) => {
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed' });
@@ -55,7 +60,14 @@ exports.default = async (req, res) => {
         res.status(200).json(result);
     }
     catch (error) {
-        console.error('API Error:', error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error('API Error details:', {
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : null,
+            filters: req.query
+        });
+        res.status(500).json({
+            error: 'Internal Server Error',
+            details: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.message : String(error)) : undefined
+        });
     }
 };
