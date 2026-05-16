@@ -1,9 +1,9 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "api/*.ts", "use": "@vercel/node" }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1.ts" }
-  ]
+  "functions": {
+    "api/*.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  }
 }

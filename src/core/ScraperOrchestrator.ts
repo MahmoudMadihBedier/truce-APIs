@@ -93,38 +93,43 @@ export class ScraperOrchestrator {
       ? `https://${process.env.VERCEL_URL}`
       : 'http://localhost:3000';
 
+    const tasks: Promise<void>[] = [];
+
     for (const category of this.categories) {
       for (const store of stores) {
         const path = (category.paths as Record<string, string>)[store];
         if (!path) continue;
 
-        try {
-          // Fire and forget: trigger a sub-task for each store/category pair
-          // In a real production system, this could be a message queue.
-          axios
-            .post(
-              `${baseUrl}/api/scrape-task`,
-              {
-                store,
-                category_path: path,
-                category_name: category.name,
+        // Trigger a sub-task for each store/category pair
+        const task = axios
+          .post(
+            `${baseUrl}/api/scrape-task`,
+            {
+              store,
+              category_path: path,
+              category_name: category.name,
+            },
+            {
+              headers: {
+                'x-scrape-secret': process.env.SCRAPE_SECRET,
               },
-              {
-                headers: {
-                  'x-scrape-secret': process.env.SCRAPE_SECRET,
-                },
-              },
-            )
-            .catch((err) =>
-              console.error(
-                `Failed to trigger task for ${store}:`,
-                err.message,
-              ),
+            },
+          )
+          .then(() => {
+            console.log(`Triggered task for ${store} in ${category.name}`);
+          })
+          .catch((err) => {
+            console.error(
+              `Failed to trigger task for ${store} in ${category.name}:`,
+              err.message,
             );
-        } catch (error) {
-          console.error(`Orchestrator error for ${store}:`, error);
-        }
+          });
+
+        tasks.push(task);
       }
     }
+
+    // Wait for all trigger requests to be sent before finishing orchestration
+    await Promise.allSettled(tasks);
   }
 }

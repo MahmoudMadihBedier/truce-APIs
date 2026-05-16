@@ -8,6 +8,8 @@ import { NoonScraper } from '../src/data/scrapers/noon/NoonScraper';
 /**
  * Executes a granular scraping task for a specific store and category.
  * Designed to be called by the orchestrator to stay within platform limits.
+ * @param req VercelRequest
+ * @param res VercelResponse
  */
 export default async (req: VercelRequest, res: VercelResponse) => {
   if (req.method !== 'POST') {
@@ -47,12 +49,17 @@ export default async (req: VercelRequest, res: VercelResponse) => {
         return res.status(400).json({ error: 'Unsupported store' });
     }
 
-    console.log(`Starting scrape for ${store} in ${category_name || 'default'}`);
+    console.log(
+      `Starting scrape for ${store} in ${category_name || 'default'}`,
+    );
     const products = await scraper.scrape(category_path);
 
     // Enrich with category metadata
     const enriched = category_name
-      ? products.map(p => ({ ...p, product_category: `${category_name} | ${p.product_category}` }))
+      ? products.map((p) => ({
+          ...p,
+          product_category: `${category_name} | ${p.product_category}`,
+        }))
       : products;
 
     await repository.saveAll(enriched);
@@ -62,7 +69,10 @@ export default async (req: VercelRequest, res: VercelResponse) => {
       count: enriched.length,
     });
   } catch (error) {
-    console.error(`Scrape task failed for ${store}:`, error);
+    console.error(`Scrape task failed for ${store}:`, {
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : null,
+    });
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
