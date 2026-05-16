@@ -1,11 +1,9 @@
-import { JumiaScraper } from '../data/scrapers/jumia/JumiaScraper';
-import { AmazonScraper } from '../data/scrapers/amazon/AmazonScraper';
-import { CarrefourScraper } from '../data/scrapers/carrefour/CarrefourScraper';
-import { NoonScraper } from '../data/scrapers/noon/NoonScraper';
+import axios from 'axios';
 import { IProductRepository } from '../domain/repositories/IProductRepository';
 
 /**
  * Service to orchestrate the scraping process across multiple stores and categories.
+ * Distributes work via HTTP calls to Vercel API tasks to stay within execution limits.
  */
 export class ScraperOrchestrator {
   private readonly categories = [
@@ -36,51 +34,95 @@ export class ScraperOrchestrator {
         carrefour: '/mafegy/en/c/FEGY1200000',
       },
     },
+    {
+      name: 'Home Furniture',
+      paths: {
+        amazon: '/s?k=furniture',
+        jumia: '/home-office/',
+        noon: '/egypt-en/home-kitchen/',
+        carrefour: '/mafegy/en/c/FEGY1400000',
+      },
+    },
+    {
+      name: 'Beauty & Health',
+      paths: {
+        amazon: '/s?k=beauty',
+        jumia: '/health-beauty/',
+        noon: '/egypt-en/beauty-health/',
+        carrefour: '/mafegy/en/c/FEGY1100000',
+      },
+    },
+    {
+      name: 'Baby & Toys',
+      paths: {
+        amazon: '/s?k=toys',
+        jumia: '/baby-products/',
+        noon: '/egypt-en/baby-toys/',
+        carrefour: '/mafegy/en/c/FEGY1300000',
+      },
+    },
+    {
+      name: 'Sports & Outdoors',
+      paths: {
+        amazon: '/s?k=sports',
+        jumia: '/sporting-goods/',
+        noon: '/egypt-en/sports-outdoors/',
+        carrefour: '/mafegy/en/c/FEGY1700000',
+      },
+    },
+    {
+      name: 'Automotive',
+      paths: {
+        amazon: '/s?k=automotive',
+        jumia: '/automobile/',
+        noon: '/egypt-en/automotive/',
+        carrefour: '/mafegy/en/c/FEGY1800000',
+      },
+    },
   ];
 
   constructor(private repository: IProductRepository) {}
 
   /**
-   * Runs all scrapers for all predefined categories and saves results to the repository.
+   * Triggers granular scraping tasks for all stores and categories.
+   * Uses internal HTTP calls to distribute the load across multiple Vercel function instances.
    */
   async runAll(): Promise<void> {
-    const config = {
-      proxyUrl: process.env.PROXY_URL,
-    };
-
-    const scrapers = [
-      { instance: new JumiaScraper(config), key: 'jumia' as const },
-      { instance: new AmazonScraper(config), key: 'amazon' as const },
-      { instance: new CarrefourScraper(config), key: 'carrefour' as const },
-      { instance: new NoonScraper(config), key: 'noon' as const },
-    ];
+    const stores = ['jumia', 'amazon', 'carrefour', 'noon'];
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : 'http://localhost:3000';
 
     for (const category of this.categories) {
-      console.log(`Starting scrape for category: ${category.name}`);
+      for (const store of stores) {
+        const path = (category.paths as Record<string, string>)[store];
+        if (!path) continue;
 
-      // We run store scrapers sequentially to stay within Vercel memory/IP limits
-      for (const { instance, key } of scrapers) {
         try {
-          const path = category.paths[key];
-          if (!path) continue;
-
-          const products = await instance.scrape(path);
-
-          // Tag products with the high-level category
-          const enrichedProducts = products.map((p) => ({
-            ...p,
-            product_category: `${category.name} | ${p.product_category}`,
-          }));
-
-          await this.repository.saveAll(enrichedProducts);
-          console.log(
-            `Saved ${enrichedProducts.length} products from ${instance.constructor.name} in ${category.name}`,
-          );
+          // Fire and forget: trigger a sub-task for each store/category pair
+          // In a real production system, this could be a message queue.
+          axios
+            .post(
+              `${baseUrl}/api/scrape-task`,
+              {
+                store,
+                category_path: path,
+                category_name: category.name,
+              },
+              {
+                headers: {
+                  'x-scrape-secret': process.env.SCRAPE_SECRET,
+                },
+              },
+            )
+            .catch((err) =>
+              console.error(
+                `Failed to trigger task for ${store}:`,
+                err.message,
+              ),
+            );
         } catch (error) {
-          console.error(
-            `Error in ${instance.constructor.name} for ${category.name}:`,
-            error,
-          );
+          console.error(`Orchestrator error for ${store}:`, error);
         }
       }
     }

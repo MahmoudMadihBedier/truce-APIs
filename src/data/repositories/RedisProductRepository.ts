@@ -8,7 +8,7 @@ import { IProductRepository } from '../../domain/repositories/IProductRepository
 import crypto from 'crypto';
 
 /**
- * Implementation of IProductRepository using Redis
+ * Implementation of IProductRepository using Redis with secondary indexing and sorted sets.
  */
 export class RedisProductRepository implements IProductRepository {
   private redis: Redis;
@@ -27,16 +27,24 @@ export class RedisProductRepository implements IProductRepository {
     return `product:${hash}`;
   }
 
+  /**
+   * Saves a product and updates its secondary indexes and sorted update set.
+   * @param product Product entity
+   */
   async save(product: Product): Promise<void> {
     const key = this.getProductKey(product.product_url);
     await this.redis.set(key, JSON.stringify(product));
 
     const pipeline = this.redis.pipeline();
     pipeline.sadd('products:all', key);
-    pipeline.sadd(`idx:store:${product.store_name}`, key);
+
+    // Index by last update time (Sorted Set)
+    const timestamp = new Date(product.last_updated_utc).getTime();
+    pipeline.zadd('products:latest', timestamp, key);
+
+    pipeline.sadd(`idx:store:${product.store_name.toLowerCase()}`, key);
     pipeline.sadd(`idx:brand:${product.brand_name.toLowerCase()}`, key);
 
-    // Normalize and index categories
     const categories = product.product_category
       .split('|')
       .map((c) => c.trim().toLowerCase());
@@ -44,7 +52,6 @@ export class RedisProductRepository implements IProductRepository {
       pipeline.sadd(`idx:category:${cat}`, key);
     }
 
-    // Basic keyword indexing for name
     const words = product.product_name
       .toLowerCase()
       .split(/\s+/)
@@ -56,12 +63,21 @@ export class RedisProductRepository implements IProductRepository {
     await pipeline.exec();
   }
 
+  /**
+   * Saves multiple products efficiently using pipelining.
+   * @param products Array of products
+   */
   async saveAll(products: Product[]): Promise<void> {
     for (const product of products) {
       await this.save(product);
     }
   }
 
+  /**
+   * Finds products using secondary indexes and intersection.
+   * Supports pagination and filtering.
+   * @param filters Filtering criteria
+   */
   async find(filters: ProductFilters): Promise<PaginatedProducts> {
     const {
       page = 1,
@@ -72,10 +88,10 @@ export class RedisProductRepository implements IProductRepository {
       category,
     } = filters;
 
-    let resultKeys: string[] = [];
     const setsToIntersect: string[] = [];
 
-    if (store_name) setsToIntersect.push(`idx:store:${store_name}`);
+    if (store_name)
+      setsToIntersect.push(`idx:store:${store_name.toLowerCase()}`);
     if (brand_name)
       setsToIntersect.push(`idx:brand:${brand_name.toLowerCase()}`);
     if (category)
@@ -91,37 +107,44 @@ export class RedisProductRepository implements IProductRepository {
       }
     }
 
+    let resultKeys: string[] = [];
+    let total_count = 0;
+
     if (setsToIntersect.length > 0) {
       const tempKey = `temp:search:${Date.now()}:${Math.random()}`;
       await this.redis.sinterstore(tempKey, ...setsToIntersect);
-      resultKeys = await this.redis.smembers(tempKey);
+      total_count = await this.redis.scard(tempKey);
+      resultKeys = (await this.redis.sort(
+        tempKey,
+        'LIMIT',
+        (page - 1) * limit,
+        limit,
+      )) as string[];
       await this.redis.del(tempKey);
     } else {
-      resultKeys = await this.redis.smembers('products:all');
+      total_count = await this.redis.scard('products:all');
+      resultKeys = (await this.redis.sort(
+        'products:all',
+        'LIMIT',
+        (page - 1) * limit,
+        limit,
+      )) as string[];
     }
 
-    const total_count = resultKeys.length;
-    const start = (page - 1) * limit;
-    const end = start + limit;
-    const paginatedKeys = resultKeys.slice(start, end);
-
-    const products: Product[] = [];
-    if (paginatedKeys.length > 0) {
-      const data = await this.redis.mget(...paginatedKeys);
-      for (const item of data) {
-        if (item) {
-          products.push(JSON.parse(item));
-        }
-      }
-    }
-
-    return {
-      products,
-      total_count,
-      timestamp: new Date().toISOString(),
-    };
+    const products = await this.fetchProducts(resultKeys);
+    return { products, total_count, timestamp: new Date().toISOString() };
   }
 
+  private async fetchProducts(keys: string[]): Promise<Product[]> {
+    if (keys.length === 0) return [];
+    const data = await this.redis.mget(...keys);
+    return data.map((item) => (item ? JSON.parse(item) : null)).filter(Boolean);
+  }
+
+  /**
+   * Retrieves a product by its unique URL.
+   * @param url Product URL
+   */
   async findByUrl(url: string): Promise<Product | null> {
     const key = this.getProductKey(url);
     const data = await this.redis.get(key);

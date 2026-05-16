@@ -136,6 +136,10 @@ export class NoonScraper extends BaseScraper {
         ? parseFloat(previousPriceStr)
         : null;
 
+      const isOos =
+        $el.find('.outOfStock').length > 0 ||
+        $el.text().includes('Out of Stock');
+
       return {
         product_name: name,
         product_category: 'Noon | Category',
@@ -146,7 +150,7 @@ export class NoonScraper extends BaseScraper {
         product_image_url: imageUrl,
         store_name: 'Noon Egypt',
         discounts_offers: $el.find('.discount').text().trim() || null,
-        availability_status: 'In Stock',
+        availability_status: isOos ? 'Out of Stock' : 'In Stock',
         location_city: 'Cairo',
         last_updated_utc: new Date().toISOString(),
       };
@@ -174,17 +178,20 @@ export class NoonScraper extends BaseScraper {
       : null;
     const imageUrl = cheerioApi('.productImage img').first().attr('src') || '';
 
+    const brand = cheerioApi('.brand').first().text().trim() || 'Unknown';
+    const isOos = cheerioApi('.outOfStock').length > 0;
+
     return {
       product_name: name,
       product_category: 'Noon',
-      brand_name: 'Unknown',
+      brand_name: brand,
       product_url: '',
       current_price_egp: currentPrice,
       previous_price_egp: previousPrice,
       product_image_url: imageUrl,
       store_name: 'Noon Egypt',
       discounts_offers: null,
-      availability_status: 'In Stock',
+      availability_status: isOos ? 'Out of Stock' : 'In Stock',
       location_city: 'Cairo',
       last_updated_utc: new Date().toISOString(),
     };
