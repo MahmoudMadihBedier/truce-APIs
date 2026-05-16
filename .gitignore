@@ -1,4 +1,3 @@
-node_modules
 dist
 public
 .vercel
@@ -6,3 +5,21 @@ public
 coverage
 *.log
 *.html
+node_modules/
+dist/
+public/
+.vercel/
+.env
+.env.*
+coverage/
+*.log
+*.html
+# TypeScript
+*.tsbuildinfo
+# OS
+.DS_Store
+Thumbs.db
+# Vercel
+.vercel
+# Next.js
+.next/
