@@ -1,4 +1,4 @@
-import { Product } from '@/domain/entities/Product';
+import { Product } from '../../domain/entities/Product';
 
 /**
  * Configuration for proxies and anti-blocking
