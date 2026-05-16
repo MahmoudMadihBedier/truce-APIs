@@ -4,8 +4,10 @@ import { RedisProductRepository } from '../src/data/repositories/RedisProductRep
 import { ScraperOrchestrator } from '../src/core/ScraperOrchestrator';
 
 /**
- * Endpoint to trigger the daily scraping process.
- * Protected by a secret token.
+ * Main orchestration endpoint.
+ * Triggers a market-wide data refresh using Vercel's waitUntil to manage the background task lifecycle.
+ * @param req VercelRequest
+ * @param res VercelResponse
  */
 export default async (req: VercelRequest, res: VercelResponse) => {
   if (req.method !== 'POST') {
@@ -21,19 +23,21 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     const repository = new RedisProductRepository();
     const orchestrator = new ScraperOrchestrator(repository);
 
-    // Fire and forget: the scraping task runs in the background.
-    // Vercel's waitUntil ensures the task finishes even after the response is sent.
+    // Using Vercel's waitUntil to ensure the background orchestration task
+    // finishes even after the HTTP response is sent.
     waitUntil(
       orchestrator.runAll().catch((err) => {
-        console.error('Background scraping failed:', err);
+        console.error('Market-wide scrape failed:', err);
       }),
     );
 
-    res.status(200).json({
-      message: 'Scraping triggered successfully in background',
+    res.status(202).json({
+      message: 'Scrape orchestration started',
+      status: 'accepted',
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error('Scrape error:', error);
+    console.error('Orchestration trigger failed:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
