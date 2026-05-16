@@ -44,42 +44,45 @@ export class ScraperOrchestrator {
    * Runs all scrapers for all predefined categories and saves results to the repository.
    */
   async runAll(): Promise<void> {
+    const config = {
+      proxyUrl: process.env.PROXY_URL,
+    };
+
     const scrapers = [
-      { instance: new JumiaScraper(), key: 'jumia' as const },
-      { instance: new AmazonScraper(), key: 'amazon' as const },
-      { instance: new CarrefourScraper(), key: 'carrefour' as const },
-      { instance: new NoonScraper(), key: 'noon' as const },
+      { instance: new JumiaScraper(config), key: 'jumia' as const },
+      { instance: new AmazonScraper(config), key: 'amazon' as const },
+      { instance: new CarrefourScraper(config), key: 'carrefour' as const },
+      { instance: new NoonScraper(config), key: 'noon' as const },
     ];
 
     for (const category of this.categories) {
       console.log(`Starting scrape for category: ${category.name}`);
 
-      await Promise.allSettled(
-        scrapers.map(async ({ instance, key }) => {
-          try {
-            const path = category.paths[key];
-            if (!path) return;
+      // We run store scrapers sequentially to stay within Vercel memory/IP limits
+      for (const { instance, key } of scrapers) {
+        try {
+          const path = category.paths[key];
+          if (!path) continue;
 
-            const products = await instance.scrape(path);
+          const products = await instance.scrape(path);
 
-            // Tag products with the high-level category
-            const enrichedProducts = products.map((p) => ({
-              ...p,
-              product_category: `${category.name} | ${p.product_category}`,
-            }));
+          // Tag products with the high-level category
+          const enrichedProducts = products.map((p) => ({
+            ...p,
+            product_category: `${category.name} | ${p.product_category}`,
+          }));
 
-            await this.repository.saveAll(enrichedProducts);
-            console.log(
-              `Saved ${enrichedProducts.length} products from ${instance.constructor.name} in ${category.name}`,
-            );
-          } catch (error) {
-            console.error(
-              `Error in ${instance.constructor.name} for ${category.name}:`,
-              error,
-            );
-          }
-        }),
-      );
+          await this.repository.saveAll(enrichedProducts);
+          console.log(
+            `Saved ${enrichedProducts.length} products from ${instance.constructor.name} in ${category.name}`,
+          );
+        } catch (error) {
+          console.error(
+            `Error in ${instance.constructor.name} for ${category.name}:`,
+            error,
+          );
+        }
+      }
     }
   }
 }

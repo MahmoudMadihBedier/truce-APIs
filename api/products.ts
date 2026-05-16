@@ -15,18 +15,19 @@ export default async (req: VercelRequest, res: VercelResponse) => {
 
   try {
     const repository = new RedisProductRepository();
+    const config = { proxyUrl: process.env.PROXY_URL };
 
     if (product_url && typeof product_url === 'string') {
       // Real-time scrape for single URL
       let product: Product | null = null;
       if (product_url.includes('jumia.com.eg')) {
-        product = await new JumiaScraper().scrapeProduct(product_url);
+        product = await new JumiaScraper(config).scrapeProduct(product_url);
       } else if (product_url.includes('amazon.eg')) {
-        product = await new AmazonScraper().scrapeProduct(product_url);
+        product = await new AmazonScraper(config).scrapeProduct(product_url);
       } else if (product_url.includes('carrefouregypt.com')) {
-        product = await new CarrefourScraper().scrapeProduct(product_url);
+        product = await new CarrefourScraper(config).scrapeProduct(product_url);
       } else if (product_url.includes('noon.com')) {
-        product = await new NoonScraper().scrapeProduct(product_url);
+        product = await new NoonScraper(config).scrapeProduct(product_url);
       }
 
       if (product) {
