@@ -1,5 +1,10 @@
 import chromium from '@sparticuz/chromium-min';
-import { chromium as playwright } from 'playwright-core';
+import {
+  chromium as playwright,
+  Browser,
+  BrowserContext,
+  Page,
+} from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
 import { BaseScraper } from '../BaseScraper';
@@ -11,18 +16,18 @@ import { Product } from '../../../domain/entities/Product';
 export class JumiaScraper extends BaseScraper {
   private readonly baseUrl = 'https://www.jumia.com.eg';
 
+  /**
+   * Scrapes Jumia search results or category pages
+   * @param category Category path or search query
+   * @returns List of scraped products
+   */
   async scrape(category = '/all-products/'): Promise<Product[]> {
     return this.withRetry(async () => {
-      let browser = null;
+      let browser: Browser | null = null;
       try {
-        browser = await playwright.launch({
-          args: chromium.args,
-          executablePath: await chromium.executablePath(),
-          headless: true,
-        });
-        const page = await browser.newPage({
-          userAgent: this.config.userAgent,
-        });
+        browser = await this.launchBrowser();
+        const context = await this.createContext(browser);
+        const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
@@ -30,12 +35,7 @@ export class JumiaScraper extends BaseScraper {
           timeout: 60000,
         });
 
-        if (
-          response?.status() === 403 ||
-          (await page.title()).includes('Just a moment')
-        ) {
-          throw new Error('Jumia blocked request (Cloudflare)');
-        }
+        await this.checkBlocked(page, response?.status());
 
         await page
           .waitForSelector('.prd._fb.col.c-prd', { timeout: 15000 })
@@ -59,25 +59,26 @@ export class JumiaScraper extends BaseScraper {
     });
   }
 
+  /**
+   * Scrapes a single product page
+   * @param url Product URL
+   * @returns Scraped product entity
+   */
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
-      let browser = null;
+      let browser: Browser | null = null;
       try {
-        browser = await playwright.launch({
-          args: chromium.args,
-          executablePath: await chromium.executablePath(),
-          headless: true,
+        browser = await this.launchBrowser();
+        const context = await this.createContext(browser);
+        const page = await context.newPage();
+
+        const response = await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000,
         });
-        const page = await browser.newPage({
-          userAgent: this.config.userAgent,
-        });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await this.checkBlocked(page, response?.status());
+
         const content = await page.content();
-
-        if ((await page.title()).includes('Just a moment')) {
-          throw new Error('Jumia blocked request (Cloudflare)');
-        }
-
         const $ = cheerio.load(content);
         const product = this.normalize($);
         product.product_url = url;
@@ -88,7 +89,37 @@ export class JumiaScraper extends BaseScraper {
     });
   }
 
-  private parseProduct($el: cheerio.Cheerio<Element>): Product | null {
+  private async launchBrowser(): Promise<Browser> {
+    return await playwright.launch({
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+      proxy: this.config.proxyUrl
+        ? { server: this.config.proxyUrl }
+        : undefined,
+    });
+  }
+
+  private async createContext(browser: Browser): Promise<BrowserContext> {
+    return await browser.newContext({
+      userAgent: this.config.userAgent,
+      viewport: { width: 1280, height: 720 },
+    });
+  }
+
+  private async checkBlocked(page: Page, status?: number) {
+    const title = await page.title();
+    if (status === 403 || title.includes('Just a moment')) {
+      throw new Error('Jumia blocked request (Cloudflare)');
+    }
+  }
+
+  /**
+   * Public method to parse a product element for testing.
+   * @param $el Cheerio element
+   * @returns Product or null
+   */
+  public parseProduct($el: cheerio.Cheerio<Element>): Product | null {
     try {
       const name = $el.find('.name').text().trim();
       const relativeUrl = $el.find('.core').attr('href');
@@ -115,6 +146,11 @@ export class JumiaScraper extends BaseScraper {
         : null;
       const discount = $el.find('.bdg._dsct').text().trim() || null;
 
+      const isOutOfStock =
+        $el.hasClass('out-of-stock') ||
+        $el.find('.out-of-stock').length > 0 ||
+        $el.text().includes('Out of Stock');
+
       return {
         product_name: name,
         product_category: 'Home | Jumia',
@@ -125,7 +161,7 @@ export class JumiaScraper extends BaseScraper {
         product_image_url: imageUrl,
         store_name: 'Jumia Egypt',
         discounts_offers: discount,
-        availability_status: 'In Stock',
+        availability_status: isOutOfStock ? 'Out of Stock' : 'In Stock',
         location_city: 'Cairo',
         last_updated_utc: new Date().toISOString(),
       };
@@ -162,6 +198,9 @@ export class JumiaScraper extends BaseScraper {
       categories.push(cheerioApi(el).text().trim());
     });
 
+    const oos =
+      cheerioApi('.-oos').length > 0 || cheerioApi('.out-of-stock').length > 0;
+
     return {
       product_name: name,
       product_category: categories.join(' | '),
@@ -172,7 +211,7 @@ export class JumiaScraper extends BaseScraper {
       product_image_url: imageUrl,
       store_name: 'Jumia Egypt',
       discounts_offers: cheerioApi('.bdg._dsct').first().text().trim() || null,
-      availability_status: 'In Stock',
+      availability_status: oos ? 'Out of Stock' : 'In Stock',
       location_city: 'Cairo',
       last_updated_utc: new Date().toISOString(),
     };

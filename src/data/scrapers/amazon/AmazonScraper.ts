@@ -19,6 +19,7 @@ export class AmazonScraper extends BaseScraper {
   /**
    * Scrapes Amazon search results
    * @param category Search query or category path
+   * @returns List of scraped products
    */
   async scrape(category = '/s?k=coffee'): Promise<Product[]> {
     return this.withRetry(async () => {
@@ -63,6 +64,7 @@ export class AmazonScraper extends BaseScraper {
   /**
    * Scrapes a single product page
    * @param url Product URL
+   * @returns Scraped product entity
    */
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
@@ -119,7 +121,12 @@ export class AmazonScraper extends BaseScraper {
     }
   }
 
-  private parseProduct($el: cheerio.Cheerio<Element>): Product | null {
+  /**
+   * Public method to parse a product element for testing.
+   * @param $el Cheerio element
+   * @returns Product or null
+   */
+  public parseProduct($el: cheerio.Cheerio<Element>): Product | null {
     try {
       const name = $el.find('h2 span').text().trim();
       const relativeUrl = $el.find('h2 a').attr('href');
@@ -151,6 +158,13 @@ export class AmazonScraper extends BaseScraper {
         ? parseFloat(previousPriceStr)
         : null;
 
+      const outOfStock =
+        $el.find('.s-item-container').text().includes('Out of Stock') ||
+        $el.find('.a-color-price').text().includes('Currently unavailable');
+
+      // Attempt to extract city from search result context
+      const location = $el.find('.s-item-location').text().trim() || null;
+
       return {
         product_name: name,
         product_category: 'Amazon | Search Result',
@@ -161,8 +175,8 @@ export class AmazonScraper extends BaseScraper {
         product_image_url: imageUrl,
         store_name: 'Amazon Egypt',
         discounts_offers: null,
-        availability_status: 'In Stock',
-        location_city: null,
+        availability_status: outOfStock ? 'Out of Stock' : 'In Stock',
+        location_city: location,
         last_updated_utc: new Date().toISOString(),
       };
     } catch (e) {
@@ -199,6 +213,21 @@ export class AmazonScraper extends BaseScraper {
       cheerioApi('#bylineInfo').text().replace('Brand: ', '').trim() ||
       'Unknown';
 
+    const availabilityText = cheerioApi('#availability')
+      .text()
+      .trim()
+      .toLowerCase();
+    let availabilityStatus: 'In Stock' | 'Out of Stock' | 'Pre-order' =
+      'In Stock';
+    if (
+      availabilityText.includes('out of stock') ||
+      availabilityText.includes('currently unavailable')
+    ) {
+      availabilityStatus = 'Out of Stock';
+    } else if (availabilityText.includes('pre-order')) {
+      availabilityStatus = 'Pre-order';
+    }
+
     return {
       product_name: name,
       product_category: 'Amazon',
@@ -209,7 +238,7 @@ export class AmazonScraper extends BaseScraper {
       product_image_url: imageUrl,
       store_name: 'Amazon Egypt',
       discounts_offers: null,
-      availability_status: 'In Stock',
+      availability_status: availabilityStatus,
       location_city: null,
       last_updated_utc: new Date().toISOString(),
     };

@@ -1,0 +1,68 @@
+import { VercelRequest, VercelResponse } from '@vercel/node';
+import { RedisProductRepository } from '../src/data/repositories/RedisProductRepository';
+import { JumiaScraper } from '../src/data/scrapers/jumia/JumiaScraper';
+import { AmazonScraper } from '../src/data/scrapers/amazon/AmazonScraper';
+import { CarrefourScraper } from '../src/data/scrapers/carrefour/CarrefourScraper';
+import { NoonScraper } from '../src/data/scrapers/noon/NoonScraper';
+
+/**
+ * Executes a granular scraping task for a specific store and category.
+ * Designed to be called by the orchestrator to stay within platform limits.
+ */
+export default async (req: VercelRequest, res: VercelResponse) => {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  const { store, category_path, category_name } = req.body;
+  const secret = req.headers['x-scrape-secret'];
+
+  if (secret !== process.env.SCRAPE_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!store) {
+    return res.status(400).json({ error: 'Missing store parameter' });
+  }
+
+  try {
+    const repository = new RedisProductRepository();
+    const config = { proxyUrl: process.env.PROXY_URL };
+
+    let scraper;
+    switch (store.toLowerCase()) {
+      case 'amazon':
+        scraper = new AmazonScraper(config);
+        break;
+      case 'jumia':
+        scraper = new JumiaScraper(config);
+        break;
+      case 'carrefour':
+        scraper = new CarrefourScraper(config);
+        break;
+      case 'noon':
+        scraper = new NoonScraper(config);
+        break;
+      default:
+        return res.status(400).json({ error: 'Unsupported store' });
+    }
+
+    console.log(`Starting scrape for ${store} in ${category_name || 'default'}`);
+    const products = await scraper.scrape(category_path);
+
+    // Enrich with category metadata
+    const enriched = category_name
+      ? products.map(p => ({ ...p, product_category: `${category_name} | ${p.product_category}` }))
+      : products;
+
+    await repository.saveAll(enriched);
+
+    res.status(200).json({
+      message: `Successfully scraped ${enriched.length} products from ${store}`,
+      count: enriched.length,
+    });
+  } catch (error) {
+    console.error(`Scrape task failed for ${store}:`, error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
