@@ -1,8 +1,13 @@
-import { chromium, Browser } from 'playwright-core';
+import chromium from '@sparticuz/chromium-min';
+import {
+  chromium as playwright,
+  Browser,
+  BrowserContext,
+} from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
 import { BaseScraper } from '../BaseScraper';
-import { Product } from '@/domain/entities/Product';
+import { Product } from '../../../domain/entities/Product';
 
 /**
  * Scraper for Noon Egypt using Playwright
@@ -10,19 +15,27 @@ import { Product } from '@/domain/entities/Product';
 export class NoonScraper extends BaseScraper {
   private readonly baseUrl = 'https://www.noon.com/egypt-en';
 
+  /**
+   * Scrapes Noon search results
+   * @param category Search query or category path
+   */
   async scrape(category = '/egypt-en/electronics/'): Promise<Product[]> {
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
-        browser = await chromium.launch({ headless: true });
-        const context = await browser.newContext({
-          userAgent: this.config.userAgent,
-          viewport: { width: 1280, height: 720 },
-        });
+        browser = await this.launchBrowser();
+        const context = await this.createContext(browser);
         const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        const response = await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000,
+        });
+
+        if (response?.status() === 403) {
+          throw new Error('Noon blocked request (403)');
+        }
 
         await page
           .waitForSelector('.productContainer', { timeout: 10000 })
@@ -46,15 +59,26 @@ export class NoonScraper extends BaseScraper {
     });
   }
 
+  /**
+   * Scrapes a single product page
+   * @param url Product URL
+   */
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
-        browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage({
-          userAgent: this.config.userAgent,
+        browser = await this.launchBrowser();
+        const context = await this.createContext(browser);
+        const page = await context.newPage();
+
+        const response = await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000,
         });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        if (response?.status() === 403) {
+          throw new Error('Noon blocked request (403)');
+        }
+
         const content = await page.content();
         const $ = cheerio.load(content);
         const product = this.normalize($);
@@ -63,6 +87,24 @@ export class NoonScraper extends BaseScraper {
       } finally {
         if (browser) await browser.close();
       }
+    });
+  }
+
+  private async launchBrowser(): Promise<Browser> {
+    return await playwright.launch({
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+      proxy: this.config.proxyUrl
+        ? { server: this.config.proxyUrl }
+        : undefined,
+    });
+  }
+
+  private async createContext(browser: Browser): Promise<BrowserContext> {
+    return await browser.newContext({
+      userAgent: this.config.userAgent,
+      viewport: { width: 1280, height: 720 },
     });
   }
 

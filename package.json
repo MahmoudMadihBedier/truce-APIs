@@ -2,10 +2,10 @@
   "name": "egypt-store-scraper",
   "version": "1.0.0",
   "description": "API that scrapes product data from Jumia Egypt, Amazon Egypt, Carrefour Egypt, and Noon Egypt.",
-  "main": "dist/index.js",
+  "main": "public/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node public/index.js",
     "dev": "ts-node src/index.ts",
     "test": "jest",
     "lint": "eslint 'src/**/*.{ts,tsx}'",
@@ -15,12 +15,14 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@sparticuz/chromium-min": "^148.0.0",
     "@vercel/node": "^3.0.24",
     "axios": "^1.6.7",
     "cheerio": "^1.0.0-rc.12",
+    "domhandler": "^5.0.3",
     "dotenv": "^16.4.5",
     "ioredis": "^5.3.2",
-    "playwright-core": "^1.42.1",
+    "playwright-core": "^1.60.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
@@ -28,6 +30,7 @@
     "@types/node": "^20.11.24",
     "@typescript-eslint/eslint-plugin": "^7.1.0",
     "@typescript-eslint/parser": "^7.1.0",
+    "@vercel/functions": "^3.6.0",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.1.3",

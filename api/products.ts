@@ -1,14 +1,48 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { RedisProductRepository } from '../src/data/repositories/RedisProductRepository';
-import { ProductFilters } from '../src/domain/entities/Product';
+import { ProductFilters, Product } from '../src/domain/entities/Product';
+import { JumiaScraper } from '../src/data/scrapers/jumia/JumiaScraper';
+import { AmazonScraper } from '../src/data/scrapers/amazon/AmazonScraper';
+import { CarrefourScraper } from '../src/data/scrapers/carrefour/CarrefourScraper';
+import { NoonScraper } from '../src/data/scrapers/noon/NoonScraper';
 
 export default async (req: VercelRequest, res: VercelResponse) => {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
+  const { product_url } = req.query;
+
   try {
     const repository = new RedisProductRepository();
+
+    if (product_url && typeof product_url === 'string') {
+      // Real-time scrape for single URL
+      let product: Product | null = null;
+      if (product_url.includes('jumia.com.eg')) {
+        product = await new JumiaScraper().scrapeProduct(product_url);
+      } else if (product_url.includes('amazon.eg')) {
+        product = await new AmazonScraper().scrapeProduct(product_url);
+      } else if (product_url.includes('carrefouregypt.com')) {
+        product = await new CarrefourScraper().scrapeProduct(product_url);
+      } else if (product_url.includes('noon.com')) {
+        product = await new NoonScraper().scrapeProduct(product_url);
+      }
+
+      if (product) {
+        await repository.save(product);
+        return res.status(200).json({
+          products: [product],
+          total_count: 1,
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        return res
+          .status(404)
+          .json({ error: 'Product not found or store not supported' });
+      }
+    }
+
     const filters: ProductFilters = {
       product_name: req.query.product_name as string,
       category: req.query.category as string,

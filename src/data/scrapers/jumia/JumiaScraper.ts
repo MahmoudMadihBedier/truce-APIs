@@ -1,8 +1,9 @@
-import { chromium, Browser } from 'playwright-core';
+import chromium from '@sparticuz/chromium-min';
+import { chromium as playwright } from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
 import { BaseScraper } from '../BaseScraper';
-import { Product } from '@/domain/entities/Product';
+import { Product } from '../../../domain/entities/Product';
 
 /**
  * Scraper for Jumia Egypt using Playwright
@@ -12,9 +13,13 @@ export class JumiaScraper extends BaseScraper {
 
   async scrape(category = '/all-products/'): Promise<Product[]> {
     return this.withRetry(async () => {
-      let browser: Browser | null = null;
+      let browser = null;
       try {
-        browser = await chromium.launch({ headless: true });
+        browser = await playwright.launch({
+          args: chromium.args,
+          executablePath: await chromium.executablePath(),
+          headless: true,
+        });
         const page = await browser.newPage({
           userAgent: this.config.userAgent,
         });
@@ -56,9 +61,13 @@ export class JumiaScraper extends BaseScraper {
 
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
-      let browser: Browser | null = null;
+      let browser = null;
       try {
-        browser = await chromium.launch({ headless: true });
+        browser = await playwright.launch({
+          args: chromium.args,
+          executablePath: await chromium.executablePath(),
+          headless: true,
+        });
         const page = await browser.newPage({
           userAgent: this.config.userAgent,
         });
@@ -92,11 +101,13 @@ export class JumiaScraper extends BaseScraper {
         $el.find('.img').attr('data-src') || $el.find('.img').attr('src') || '';
       const currentPriceStr = $el
         .find('.prc')
+        .first()
         .text()
         .replace(/[^\d.]/g, '');
       const currentPrice = parseFloat(currentPriceStr);
       const previousPriceStr = $el
         .find('.old')
+        .first()
         .text()
         .replace(/[^\d.]/g, '');
       const previousPrice = previousPriceStr
