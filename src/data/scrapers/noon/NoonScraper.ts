@@ -85,6 +85,7 @@ export class NoonScraper extends BaseScraper {
         const $ = cheerio.load(content);
         const product = this.normalize($);
         product.product_url = url;
+        product.product_id = url.split('/').pop()?.split('?').shift() || '';
         return product;
       } finally {
         if (browser) await browser.close();
@@ -147,7 +148,10 @@ export class NoonScraper extends BaseScraper {
         $el.find('.outOfStock').length > 0 ||
         $el.text().includes('Out of Stock');
 
+      const productId = url.split('/').pop()?.split('?').shift() || 'unknown';
+
       return {
+        product_id: productId,
         product_name: name,
         product_category: 'Noon | Category',
         brand_name: 'Unknown',
@@ -189,6 +193,7 @@ export class NoonScraper extends BaseScraper {
     const isOos = cheerioApi('.outOfStock').length > 0;
 
     return {
+      product_id: '', // Set by caller
       product_name: name,
       product_category: 'Noon',
       brand_name: brand,

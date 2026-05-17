@@ -28,7 +28,7 @@ export class RedisProductRepository implements IProductRepository {
    */
   async save(product: Product): Promise<void> {
     const redis = getRedisClient();
-    const key = this.getProductKey(product.product_url);
+    const key = `product:${product.store_name.toLowerCase().replace(/\s+/g, '_')}:${product.product_id}`;
     await redis.set(key, JSON.stringify(product));
 
     const pipeline = redis.pipeline();
@@ -37,6 +37,7 @@ export class RedisProductRepository implements IProductRepository {
     const timestamp = new Date(product.last_updated_utc).getTime();
     pipeline.zadd('products:latest', timestamp, key);
 
+    pipeline.sadd(`idx:id:${product.product_id.toLowerCase()}`, key);
     pipeline.sadd(`idx:store:${product.store_name.toLowerCase()}`, key);
     pipeline.sadd(`idx:brand:${product.brand_name.toLowerCase()}`, key);
 
@@ -104,6 +105,8 @@ export class RedisProductRepository implements IProductRepository {
 
   private buildFilterSets(filters: ProductFilters): string[] {
     const sets: string[] = [];
+    if (filters.product_id)
+      sets.push(`idx:id:${filters.product_id.toLowerCase()}`);
     if (filters.store_name)
       sets.push(`idx:store:${filters.store_name.toLowerCase()}`);
     if (filters.brand_name)

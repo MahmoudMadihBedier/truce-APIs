@@ -1,5 +1,6 @@
 export interface Product {
   sr_no?: number;
+  product_id: string;
   product_name: string;
   product_category: string;
   brand_name: string;
@@ -15,6 +16,7 @@ export interface Product {
 }
 
 export interface ProductFilters {
+  product_id?: string;
   product_name?: string;
   category?: string;
   brand_name?: string;
