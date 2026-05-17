@@ -15,7 +15,10 @@ export default async (req: VercelRequest, res: VercelResponse) => {
   }
 
   const secret = req.headers['x-scrape-secret'];
-  if (secret !== process.env.SCRAPE_SECRET) {
+  const expectedSecret = process.env.SCRAPE_SECRET?.trim();
+
+  if (!expectedSecret || secret !== expectedSecret) {
+    console.warn('Unauthorized scrape attempt or SCRAPE_SECRET not configured');
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -23,10 +26,15 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     const repository = new RedisProductRepository();
     const orchestrator = new ScraperOrchestrator(repository);
 
+    // Detect the current base URL from the request to ensure sub-tasks hit the correct deployment
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers.host;
+    const currentBaseUrl = `${protocol}://${host}`;
+
     // Using Vercel's waitUntil to ensure the background orchestration task
     // finishes even after the HTTP response is sent.
     waitUntil(
-      orchestrator.runAll().catch((err) => {
+      orchestrator.runAll(currentBaseUrl).catch((err) => {
         console.error('Market-wide scrape failed:', err);
       }),
     );
