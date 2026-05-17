@@ -73,6 +73,7 @@ export class CarrefourScraper extends BaseScraper {
         const $ = cheerio.load(content);
         const product = this.normalize($);
         product.product_url = url;
+        product.product_id = url.split('/').pop() || '';
         return product;
       } finally {
         if (browser) await browser.close();
@@ -135,7 +136,10 @@ export class CarrefourScraper extends BaseScraper {
         $el.find('.css-1m0m2v4').length > 0 ||
         $el.text().includes('Out of Stock');
 
+      const productId = url.split('/').pop() || 'unknown';
+
       return {
+        product_id: productId,
         product_name: name,
         product_category: 'Carrefour | Supermarket',
         brand_name: 'Unknown',
@@ -177,6 +181,7 @@ export class CarrefourScraper extends BaseScraper {
     const isOos = cheerioApi('.css-1m0m2v4').length > 0;
 
     return {
+      product_id: '', // Will be set by caller from URL
       product_name: name,
       product_category: 'Carrefour',
       brand_name: brand,
