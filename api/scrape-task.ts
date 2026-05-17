@@ -18,9 +18,16 @@ export default async (req: VercelRequest, res: VercelResponse) => {
 
   const { store, category_path, category_name } = req.body;
   const secret = req.headers['x-scrape-secret'];
+  const expectedSecret = process.env.SCRAPE_SECRET?.trim();
 
-  if (secret !== process.env.SCRAPE_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (!expectedSecret || secret !== expectedSecret) {
+    console.warn(`Unauthorized scrape-task attempt for ${store}.`);
+    console.warn(`Header Secret provided: ${secret ? 'YES (matches: ' + (secret === expectedSecret) + ')' : 'NO'}`);
+    console.warn(`Config Secret defined: ${!!expectedSecret} (Length: ${expectedSecret?.length})`);
+    return res.status(401).json({
+      error: 'Unauthorized',
+      details: 'Secret mismatch or missing environment variable on this deployment.'
+    });
   }
 
   if (!store) {

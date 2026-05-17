@@ -85,13 +85,16 @@ export class ScraperOrchestrator {
 
   /**
    * Triggers granular scraping tasks for all stores and categories.
-   * Uses internal HTTP calls to distribute the load across multiple Vercel function instances.
+   * @param overrideBaseUrl Optional URL to use for sub-tasks (e.g. from request headers)
    */
-  async runAll(): Promise<void> {
+  async runAll(overrideBaseUrl?: string): Promise<void> {
     const stores = ['jumia', 'amazon', 'carrefour', 'noon'];
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000';
+
+    // Priority: 1. Manual override, 2. System VERCEL_URL, 3. Localhost
+    let baseUrl = overrideBaseUrl || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+
+    // Ensure we don't have trailing slashes
+    baseUrl = baseUrl.replace(/\/$/, '');
 
     const tasks: Promise<void>[] = [];
 
