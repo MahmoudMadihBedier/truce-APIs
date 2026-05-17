@@ -48,6 +48,14 @@ Health check endpoint.
 3. Build: `npm run build`
 4. Deploy to Vercel: `vercel`
 
+### Important: Vercel Configuration
+After deploying to Vercel, you **must** add the following environment variables in the Vercel Dashboard (Project Settings > Environment Variables):
+
+- `REDIS_URL`: Your Redis connection string (e.g., from Upstash). If you are using Vercel KV, it will automatically provide `KV_URL` which this app also supports.
+- `SCRAPE_SECRET`: A random string used to authorize the `/api/scrape` endpoint.
+
+Without these variables, the API will return a 500 error.
+
 ## Development
 
 - Run locally: `npm run dev`
