@@ -9,6 +9,7 @@ module.exports = {
     sourceType: 'module',
   },
   rules: {
-    // Add custom rules here
+    '@typescript-eslint/no-explicit-any': 'off',
+    '@typescript-eslint/no-unused-vars': 'warn',
   },
 };

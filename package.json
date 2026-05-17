@@ -4,7 +4,7 @@
   "description": "API that scrapes product data from Jumia Egypt, Amazon Egypt, Carrefour Egypt, and Noon Egypt.",
   "main": "src/index.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --noEmit",
     "start": "ts-node src/index.ts",
     "dev": "ts-node src/index.ts",
     "test": "jest",
@@ -16,7 +16,7 @@
   "license": "ISC",
   "dependencies": {
     "@sparticuz/chromium-min": "^131.0.1",
-    "@vercel/node": "^3.0.24",
+    "@vercel/node": "^5.8.2",
     "axios": "^1.6.7",
     "cheerio": "^1.0.0-rc.12",
     "domhandler": "^5.0.3",
