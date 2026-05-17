@@ -10,9 +10,11 @@ let redisInstance: Redis | null = null;
  */
 export const getRedisClient = (): Redis => {
   if (!redisInstance) {
-    const redisUrl = process.env.REDIS_URL;
+    const redisUrl = process.env.REDIS_URL || process.env.KV_URL;
     if (!redisUrl) {
-      throw new Error('REDIS_URL environment variable is missing');
+      throw new Error(
+        'REDIS_URL or KV_URL environment variable is missing. Please set it in your Vercel Project Settings -> Environment Variables.',
+      );
     }
 
     const options: any = {
