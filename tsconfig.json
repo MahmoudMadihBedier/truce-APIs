@@ -10,7 +10,8 @@
     "moduleResolution": "node",
     "resolveJsonModule": true,
     "baseUrl": ".",
-    "noEmit": true
+    "outDir": "./dist",
+    "noEmit": false
   },
   "include": ["src/**/*", "api/**/*", "tests/**/*"],
   "exclude": ["node_modules"]
