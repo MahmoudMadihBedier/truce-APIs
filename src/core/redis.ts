@@ -15,11 +15,11 @@ export const getRedisClient = (): Redis => {
     }
 
     const options: any = {
-      maxRetriesPerRequest: 3,
-      connectTimeout: 10000,
+      maxRetriesPerRequest: 1,
+      connectTimeout: 5000,
       retryStrategy(times: number) {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
+        if (times > 3) return null;
+        return Math.min(times * 100, 2000);
       },
     };
 
@@ -30,10 +30,17 @@ export const getRedisClient = (): Redis => {
       };
     }
 
+    console.log(
+      `Initializing Redis client (TLS: ${redisUrl.startsWith('rediss://')})...`,
+    );
     redisInstance = new Redis(redisUrl, options);
 
     redisInstance.on('error', (err) => {
       console.error('Redis Client Error:', err);
+    });
+
+    redisInstance.on('connect', () => {
+      console.log('Redis connected successfully.');
     });
   }
   return redisInstance;
