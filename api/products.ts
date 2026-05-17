@@ -3,9 +3,9 @@ import { RedisProductRepository } from '../src/data/repositories/RedisProductRep
 import { ProductFilters, Product } from '../src/domain/entities/Product';
 
 /**
- * Handles real-time scraping of a single product URL.
+ * Lazy loads and executes scraping logic.
  */
-async function handleRealTimeScrape(url: string, repo: RedisProductRepository) {
+async function performScrape(url: string, repo: RedisProductRepository) {
   const config = { proxyUrl: process.env.PROXY_URL };
   let product: Product | null = null;
 
@@ -25,18 +25,17 @@ async function handleRealTimeScrape(url: string, repo: RedisProductRepository) {
 
   if (product) {
     await repo.save(product);
-    return { products: [{ ...product, sr_no: 1 }], total_count: 1, timestamp: new Date().toISOString() };
+    return { products: [{ ...product, sr_no: 1 }], total_count: 1 };
   }
   return null;
 }
 
 /**
- * Handles product search and filtering.
+ * Handles product searching.
  */
-async function handleSearch(req: VercelRequest, repo: RedisProductRepository) {
+async function performSearch(req: VercelRequest, repo: RedisProductRepository) {
   const page = Number(req.query.page) || 1;
   const limit = Number(req.query.limit) || 50;
-
   const filters: ProductFilters = {
     product_name: req.query.product_name as string,
     category: req.query.category as string,
@@ -50,10 +49,16 @@ async function handleSearch(req: VercelRequest, repo: RedisProductRepository) {
   const result = await repo.find(filters);
   return {
     ...result,
-    products: result.products.map((p, i) => ({ ...p, sr_no: (page - 1) * limit + i + 1 })),
+    products: result.products.map((p, i) => ({
+      ...p,
+      sr_no: (page - 1) * limit + i + 1,
+    })),
   };
 }
 
+/**
+ * Main API entry point.
+ */
 export default async (req: VercelRequest, res: VercelResponse) => {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
 
@@ -62,15 +67,19 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     const { product_url } = req.query;
 
     if (product_url && typeof product_url === 'string') {
-      const result = await handleRealTimeScrape(product_url, repo);
-      if (result) return res.status(200).json(result);
-      return res.status(404).json({ error: 'Product not found or store not supported' });
+      const data = await performScrape(product_url, repo);
+      if (!data) return res.status(404).json({ error: 'Not Supported' });
+      return res.status(200).json({ ...data, timestamp: new Date().toISOString() });
     }
 
-    const result = await handleSearch(req, repo);
-    res.status(200).json(result);
+    const searchResult = await performSearch(req, repo);
+    res.status(200).json(searchResult);
   } catch (error) {
     console.error('API Error:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: error instanceof Error ? error.message : 'Unknown' });
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: error instanceof Error ? error.message : 'Unknown',
+      stack: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.stack : null) : undefined
+    });
   }
 };

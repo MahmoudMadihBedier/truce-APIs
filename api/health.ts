@@ -2,13 +2,10 @@ import { VercelRequest, VercelResponse } from '@vercel/node';
 import { getRedisClient } from '../src/core/redis';
 
 /**
- * Health check endpoint with Redis connectivity test.
- * @param req VercelRequest
- * @param res VercelResponse
+ * Basic health check with Redis connectivity verification.
  */
 export default async (req: VercelRequest, res: VercelResponse) => {
-  let redisStatus = 'not_tested';
-
+  let redisStatus = 'init';
   try {
     const redis = getRedisClient();
     await redis.ping();
@@ -20,8 +17,8 @@ export default async (req: VercelRequest, res: VercelResponse) => {
   res.status(200).json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '1.0.1',
     redis: redisStatus,
-    env: process.env.NODE_ENV
+    env: process.env.NODE_ENV,
+    url: process.env.REDIS_URL ? 'configured' : 'missing'
   });
 };
