@@ -6,3 +6,6 @@ public
 coverage
 *.log
 *.html
+api/*.js
+src/**/*.js
+tests/*.js

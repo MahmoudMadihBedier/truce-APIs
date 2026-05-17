@@ -38,7 +38,7 @@ export default async (req: VercelRequest, res: VercelResponse) => {
       if (product) {
         await repository.save(product);
         return res.status(200).json({
-          products: [product],
+          products: [{ ...product, sr_no: 1 }],
           total_count: 1,
           timestamp: new Date().toISOString(),
         });
@@ -49,27 +49,45 @@ export default async (req: VercelRequest, res: VercelResponse) => {
       }
     }
 
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 50;
+
     const filters: ProductFilters = {
       product_name: req.query.product_name as string,
       category: req.query.category as string,
       brand_name: req.query.brand_name as string,
       store_name: req.query.store_name as string,
       location_city: req.query.location_city as string,
-      page: req.query.page ? parseInt(req.query.page as string) : 1,
-      limit: req.query.limit ? parseInt(req.query.limit as string) : 50,
+      page,
+      limit,
     };
 
     const result = await repository.find(filters);
-    res.status(200).json(result);
+
+    // Populate sr_no for the result set
+    const productsWithSrNo = result.products.map((p, i) => ({
+        ...p,
+        sr_no: (page - 1) * limit + i + 1
+    }));
+
+    res.status(200).json({
+        ...result,
+        products: productsWithSrNo
+    });
   } catch (error) {
     console.error('API Error details:', {
       message: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : null,
-      filters: req.query
+      filters: req.query,
     });
     res.status(500).json({
-        error: 'Internal Server Error',
-        details: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.message : String(error)) : undefined
+      error: 'Internal Server Error',
+      details:
+        process.env.NODE_ENV === 'development'
+          ? error instanceof Error
+            ? error.message
+            : String(error)
+          : undefined,
     });
   }
 };
