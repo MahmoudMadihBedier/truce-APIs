@@ -37,6 +37,7 @@ async function performSearch(req: VercelRequest, repo: RedisProductRepository) {
   const page = Number(req.query.page) || 1;
   const limit = Number(req.query.limit) || 50;
   const filters: ProductFilters = {
+    product_id: req.query.product_id as string,
     product_name: req.query.product_name as string,
     category: req.query.category as string,
     brand_name: req.query.brand_name as string,

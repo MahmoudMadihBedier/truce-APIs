@@ -14,11 +14,13 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     redisStatus = `error: ${err instanceof Error ? err.message : String(err)}`;
   }
 
+  const redis = getRedisClient();
   res.status(200).json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     redis: redisStatus,
+    redis_status: redis.status,
     env: process.env.NODE_ENV,
-    url: process.env.REDIS_URL ? 'configured' : 'missing'
+    url: process.env.REDIS_URL ? 'configured' : (process.env.KV_URL ? 'kv_configured' : 'missing')
   });
 };

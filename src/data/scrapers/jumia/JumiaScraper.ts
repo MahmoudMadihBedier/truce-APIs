@@ -151,7 +151,13 @@ export class JumiaScraper extends BaseScraper {
         $el.find('.out-of-stock').length > 0 ||
         $el.text().includes('Out of Stock');
 
+      const sku =
+        $el.find('.core').attr('data-sku') ||
+        url.split('/').pop()?.split('.').shift() ||
+        'unknown';
+
       return {
+        product_id: sku,
         product_name: name,
         product_category: 'Home | Jumia',
         brand_name: 'Unknown',
@@ -201,7 +207,10 @@ export class JumiaScraper extends BaseScraper {
     const oos =
       cheerioApi('.-oos').length > 0 || cheerioApi('.out-of-stock').length > 0;
 
+    const sku = cheerioApi('[data-sku]').first().attr('data-sku') || '';
+
     return {
+      product_id: sku,
       product_name: name,
       product_category: categories.join(' | '),
       brand_name: brand,

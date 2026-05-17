@@ -130,6 +130,41 @@ export class ScraperOrchestrator {
     }
 
     // Wait for all trigger requests to be sent before finishing orchestration
-    await Promise.allSettled(tasks);
+    const results = await Promise.allSettled(tasks);
+
+    // Call webhook if configured
+    await this.notifyWebhook(results);
+  }
+
+  /**
+   * Notifies the configured webhook about the scrape completion.
+   * @param results Results of the scrape tasks
+   */
+  private async notifyWebhook(
+    results: PromiseSettledResult<void>[],
+  ): Promise<void> {
+    const webhookUrl = process.env.WEBHOOK_URL;
+    if (!webhookUrl) return;
+
+    const successful = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+
+    try {
+      await axios.post(webhookUrl, {
+        event: 'scrape_completed',
+        timestamp: new Date().toISOString(),
+        summary: {
+          total_tasks: results.length,
+          successful,
+          failed,
+        },
+      });
+      console.log('Webhook notification sent successfully');
+    } catch (err) {
+      console.error(
+        'Failed to send webhook notification:',
+        (err as Error).message,
+      );
+    }
   }
 }

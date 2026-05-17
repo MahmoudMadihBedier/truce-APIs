@@ -164,8 +164,10 @@ export class AmazonScraper extends BaseScraper {
 
       // Attempt to extract city from search result context
       const location = $el.find('.s-item-location').text().trim() || null;
+      const asin = $el.attr('data-asin') || 'unknown';
 
       return {
+        product_id: asin,
         product_name: name,
         product_category: 'Amazon | Search Result',
         brand_name: 'Unknown',
@@ -228,7 +230,10 @@ export class AmazonScraper extends BaseScraper {
       availabilityStatus = 'Pre-order';
     }
 
+    const asin = (cheerioApi('#ASIN').val() as string) || '';
+
     return {
+      product_id: asin,
       product_name: name,
       product_category: 'Amazon',
       brand_name: brand,
