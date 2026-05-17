@@ -13,11 +13,12 @@ import { Product } from '../../../domain/entities/Product';
  * Scraper for Noon Egypt using Playwright
  */
 export class NoonScraper extends BaseScraper {
-  private readonly baseUrl = 'https://www.noon.com/egypt-en';
+  private readonly baseUrl = 'https://www.noon.com';
 
   /**
    * Scrapes Noon search results
    * @param category Search query or category path
+   * @returns List of scraped products
    */
   async scrape(category = '/egypt-en/electronics/'): Promise<Product[]> {
     return this.withRetry(async () => {
@@ -62,6 +63,7 @@ export class NoonScraper extends BaseScraper {
   /**
    * Scrapes a single product page
    * @param url Product URL
+   * @returns Scraped product entity
    */
   async scrapeProduct(url: string): Promise<Product> {
     return this.withRetry(async () => {
@@ -108,7 +110,12 @@ export class NoonScraper extends BaseScraper {
     });
   }
 
-  private parseProduct($el: cheerio.Cheerio<Element>): Product | null {
+  /**
+   * Parses a product element from the list page.
+   * @param $el Cheerio element
+   * @returns Product or null
+   */
+  public parseProduct($el: cheerio.Cheerio<Element>): Product | null {
     try {
       const name = $el.find('[data-qa="product-name"]').text().trim();
       const relativeUrl = $el.find('a').attr('href');
