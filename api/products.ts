@@ -75,11 +75,11 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     const searchResult = await performSearch(req, repo);
     res.status(200).json(searchResult);
   } catch (error) {
-    console.error('API Error:', error);
+    console.error('API Error details:', error);
     res.status(500).json({
       error: 'Internal Server Error',
       message: error instanceof Error ? error.message : 'Unknown',
-      stack: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.stack : null) : undefined
+      stack: error instanceof Error ? error.stack : null,
     });
   }
 };
