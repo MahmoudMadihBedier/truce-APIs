@@ -5,6 +5,7 @@ let redisInstance: Redis | null = null;
 /**
  * Provides a singleton Redis connection to prevent connection leaks.
  * Supports TLS for production environments like Upstash.
+ * Optimized for serverless responsiveness with fast-fail settings.
  * @returns Redis instance
  */
 export const getRedisClient = (): Redis => {
@@ -15,12 +16,9 @@ export const getRedisClient = (): Redis => {
     }
 
     const options: any = {
-      maxRetriesPerRequest: 1,
-      connectTimeout: 5000,
-      retryStrategy(times: number) {
-        if (times > 3) return null;
-        return Math.min(times * 100, 2000);
-      },
+      maxRetriesPerRequest: 0, // Fail fast in serverless to prevent timeouts
+      connectTimeout: 3000,    // 3 seconds
+      retryStrategy: null,     // Don't retry automatically in serverless
     };
 
     // Support for TLS (rediss://)
