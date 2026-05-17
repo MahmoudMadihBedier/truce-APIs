@@ -21,6 +21,8 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     redis: redisStatus,
     redis_status: redis.status,
     env: process.env.NODE_ENV,
-    url: process.env.REDIS_URL ? 'configured' : (process.env.KV_URL ? 'kv_configured' : 'missing')
+    url: process.env.REDIS_URL ? 'configured' : (process.env.KV_URL ? 'kv_configured' : 'missing'),
+    auth_configured: !!process.env.SCRAPE_SECRET,
+    auth_secret_length: process.env.SCRAPE_SECRET?.length || 0
   });
 };
