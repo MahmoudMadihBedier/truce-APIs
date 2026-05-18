@@ -103,8 +103,8 @@ export class ScraperOrchestrator {
         const path = (category.paths as Record<string, string>)[store];
         if (!path) continue;
 
-        // Add a small stagger to avoid simultaneous extraction in serverless environment
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        // Increase stagger to 2000ms to further reduce Vercel resource exhaustion
+        await new Promise((resolve) => setTimeout(resolve, 2000));
 
         // Trigger a sub-task for each store/category pair
         const task = axios
