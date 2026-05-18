@@ -98,8 +98,12 @@ export class NoonScraper extends BaseScraper {
     const executablePath = await chromium.executablePath();
     console.log(`Launching Noon browser with executablePath: ${executablePath}`);
 
-    // Add --disable-http2 to mitigate ERR_HTTP2_PROTOCOL_ERROR
-    const args = [...chromium.args, '--disable-http2'];
+    // Add stealth and stability flags
+    const args = [
+      ...chromium.args,
+      '--disable-http2',
+      '--disable-blink-features=AutomationControlled',
+    ];
 
     return await playwright.launch({
       args,

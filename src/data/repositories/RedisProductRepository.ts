@@ -61,11 +61,16 @@ export class RedisProductRepository implements IProductRepository {
       // Remove punctuation and special characters, but keep Arabic and Latin letters/numbers
       .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
-      // Lower word length limit to 2 to better support Arabic search terms (e.g. قهوة, شاي)
-      .filter((w) => w.length >= 2);
+      // Support 1-letter words for specific cases, but generally 2+ for search quality
+      .filter((w) => w.length >= 2 || (w.length === 1 && /\p{L}/u.test(w)));
 
     for (const word of words) {
       pipeline.sadd(`idx:name:${word}`, key);
+
+      // Also index common Arabic prefixes if word is long enough
+      if (word.length > 4 && /^ال/.test(word)) {
+        pipeline.sadd(`idx:name:${word.substring(2)}`, key);
+      }
     }
   }
 
@@ -123,7 +128,7 @@ export class RedisProductRepository implements IProductRepository {
         .toLowerCase()
         .replace(/[^\p{L}\p{N}\s]/gu, ' ')
         .split(/\s+/)
-        .filter((w) => w.length >= 2);
+        .filter((w) => w.length >= 2 || (w.length === 1 && /\p{L}/u.test(w)));
       for (const word of words) {
         sets.push(`idx:name:${word}`);
       }

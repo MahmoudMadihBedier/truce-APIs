@@ -103,10 +103,7 @@ export class ScraperOrchestrator {
         const path = (category.paths as Record<string, string>)[store];
         if (!path) continue;
 
-        // Increase stagger to 2000ms to further reduce Vercel resource exhaustion
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-
-        // Trigger a sub-task for each store/category pair
+        // Trigger tasks in parallel to avoid orchestrator timeout
         const task = axios
           .post(
             `${baseUrl}/api/scrape-task`,
