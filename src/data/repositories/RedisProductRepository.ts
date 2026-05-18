@@ -42,7 +42,8 @@ export class RedisProductRepository implements IProductRepository {
     pipeline.sadd(`idx:brand:${product.brand_name.toLowerCase()}`, key);
 
     this.indexCategories(pipeline, product.product_category, key);
-    this.indexKeywords(pipeline, product.product_name, key);
+    // Index keywords from both name and category for better search coverage
+    this.indexKeywords(pipeline, `${product.product_name} ${product.product_category}`, key);
 
     await pipeline.exec();
   }
@@ -54,11 +55,15 @@ export class RedisProductRepository implements IProductRepository {
     }
   }
 
-  private indexKeywords(pipeline: any, name: string, key: string) {
-    const words = name
+  private indexKeywords(pipeline: any, text: string, key: string) {
+    const words = text
       .toLowerCase()
+      // Remove punctuation and special characters, but keep Arabic and Latin letters/numbers
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
-      .filter((w) => w.length > 2);
+      // Lower word length limit to 2 to better support Arabic search terms (e.g. قهوة, شاي)
+      .filter((w) => w.length >= 2);
+
     for (const word of words) {
       pipeline.sadd(`idx:name:${word}`, key);
     }
@@ -116,8 +121,9 @@ export class RedisProductRepository implements IProductRepository {
     if (filters.product_name) {
       const words = filters.product_name
         .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
         .split(/\s+/)
-        .filter((w) => w.length > 2);
+        .filter((w) => w.length >= 2);
       for (const word of words) {
         sets.push(`idx:name:${word}`);
       }

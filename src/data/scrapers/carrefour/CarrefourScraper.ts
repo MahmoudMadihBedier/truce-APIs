@@ -85,8 +85,12 @@ export class CarrefourScraper extends BaseScraper {
     this.setupEnvironment();
     const executablePath = await chromium.executablePath();
     console.log(`Launching Carrefour browser with executablePath: ${executablePath}`);
+
+    // Add --disable-http2 to mitigate ERR_HTTP2_PROTOCOL_ERROR
+    const args = [...chromium.args, '--disable-http2'];
+
     return await playwright.launch({
-      args: chromium.args,
+      args,
       executablePath,
       headless: true,
       proxy: this.config.proxyUrl
@@ -99,6 +103,14 @@ export class CarrefourScraper extends BaseScraper {
     return await browser.newContext({
       userAgent: this.config.userAgent,
       viewport: { width: 1280, height: 720 },
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-CH-UA':
+          '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"',
+      },
     });
   }
 
