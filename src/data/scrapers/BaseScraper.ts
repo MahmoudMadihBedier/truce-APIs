@@ -45,6 +45,35 @@ export abstract class BaseScraper {
   protected abstract normalize(data: unknown): Product;
 
   /**
+   * Ensures the lambda environment is properly set up with necessary library paths.
+   * Chromium on Vercel (AWS Lambda) requires specific shared libraries extracted to /tmp.
+   */
+  protected setupEnvironment(): void {
+    if (process.env.VERCEL || process.env.AWS_EXECUTION_ENV) {
+      // @sparticuz/chromium extracts libraries to these locations based on the runtime
+      // Chromium on Vercel needs these paths for its shared libraries
+      const paths = ['/tmp/al2/lib', '/tmp/al2023/lib'];
+
+      let currentPath = process.env.LD_LIBRARY_PATH || '';
+      const parts = currentPath.split(':').filter(Boolean);
+
+      for (const p of paths) {
+        if (!parts.includes(p)) {
+          parts.unshift(p);
+        }
+      }
+
+      process.env.LD_LIBRARY_PATH = parts.join(':');
+      process.env.FONTCONFIG_PATH = '/tmp/fonts';
+
+      // Force extraction of shared libraries if they are missing
+      // By calling a dummy method or checking existence if needed
+
+      console.log(`Environment setup: LD_LIBRARY_PATH=${process.env.LD_LIBRARY_PATH}`);
+    }
+  }
+
+  /**
    * Executes a task with retry logic
    * @param task The task to execute
    */

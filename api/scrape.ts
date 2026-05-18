@@ -1,3 +1,4 @@
+import '../src/core/environment';
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { waitUntil } from '@vercel/functions';
 import { RedisProductRepository } from '../src/data/repositories/RedisProductRepository';

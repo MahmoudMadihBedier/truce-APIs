@@ -90,6 +90,7 @@ export class JumiaScraper extends BaseScraper {
   }
 
   private async launchBrowser(): Promise<Browser> {
+    this.setupEnvironment();
     const executablePath = await chromium.executablePath();
     console.log(`Launching Jumia browser with executablePath: ${executablePath}`);
     return await playwright.launch({

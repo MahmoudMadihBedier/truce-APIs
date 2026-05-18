@@ -103,6 +103,9 @@ export class ScraperOrchestrator {
         const path = (category.paths as Record<string, string>)[store];
         if (!path) continue;
 
+        // Add a small stagger to avoid simultaneous extraction in serverless environment
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
         // Trigger a sub-task for each store/category pair
         const task = axios
           .post(

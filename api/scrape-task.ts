@@ -1,4 +1,6 @@
+import '../src/core/environment';
 import { VercelRequest, VercelResponse } from '@vercel/node';
+import chromium from '@sparticuz/chromium';
 import { RedisProductRepository } from '../src/data/repositories/RedisProductRepository';
 import { JumiaScraper } from '../src/data/scrapers/jumia/JumiaScraper';
 import { AmazonScraper } from '../src/data/scrapers/amazon/AmazonScraper';
@@ -35,6 +37,12 @@ export default async (req: VercelRequest, res: VercelResponse) => {
   }
 
   try {
+    // Pre-flight extraction to ensure shared libraries are available before scrapers start
+    if (process.env.VERCEL) {
+      console.log('Pre-flight: Ensuring chromium binaries are extracted...');
+      await chromium.executablePath();
+    }
+
     const repository = new RedisProductRepository();
     const config = { proxyUrl: process.env.PROXY_URL };
 
