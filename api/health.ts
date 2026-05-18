@@ -1,4 +1,5 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
+import chromium from '@sparticuz/chromium';
 import { getRedisClient } from '../src/core/redis';
 
 /**
@@ -15,11 +16,19 @@ export default async (req: VercelRequest, res: VercelResponse) => {
   }
 
   const redis = getRedisClient();
+  let chromiumPath = 'unknown';
+  try {
+    chromiumPath = await chromium.executablePath();
+  } catch (err) {
+    chromiumPath = `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
   res.status(200).json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     redis: redisStatus,
     redis_status: redis.status,
+    chromium_path: chromiumPath,
     env: process.env.NODE_ENV,
     url: process.env.REDIS_URL ? 'configured' : (process.env.KV_URL ? 'kv_configured' : 'missing'),
     auth_configured: !!process.env.SCRAPE_SECRET,

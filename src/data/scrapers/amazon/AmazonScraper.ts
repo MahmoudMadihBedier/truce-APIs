@@ -1,4 +1,4 @@
-import chromium from '@sparticuz/chromium-min';
+import chromium from '@sparticuz/chromium';
 import {
   chromium as playwright,
   Browser,
@@ -92,9 +92,11 @@ export class AmazonScraper extends BaseScraper {
   }
 
   private async launchBrowser(): Promise<Browser> {
+    const executablePath = await chromium.executablePath();
+    console.log(`Launching Amazon browser with executablePath: ${executablePath}`);
     return await playwright.launch({
       args: chromium.args,
-      executablePath: await chromium.executablePath(),
+      executablePath,
       headless: true,
       proxy: this.config.proxyUrl
         ? { server: this.config.proxyUrl }
