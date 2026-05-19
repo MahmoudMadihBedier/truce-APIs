@@ -100,13 +100,12 @@ export class RedisProductRepository implements IProductRepository {
           filters.page! * filters.limit!,
         );
     } else {
-      total_count = await redis.scard('products:all');
-      resultKeys = (await redis.sort(
-        'products:all',
-        'LIMIT',
-        (filters.page! - 1) * filters.limit!,
-        filters.limit!,
-      )) as string[];
+      // Use ZRANGE on the sorted set for pagination when no filters are present.
+      // This is compatible with Upstash and provides reliable ordering by date.
+      total_count = await redis.zcard('products:latest');
+      const start = (filters.page! - 1) * filters.limit!;
+      const stop = start + filters.limit! - 1;
+      resultKeys = await redis.zrevrange('products:latest', start, stop);
     }
 
     const products = await this.fetchProducts(resultKeys);
