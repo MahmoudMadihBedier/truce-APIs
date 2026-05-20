@@ -29,11 +29,15 @@ export class CarrefourScraper extends BaseScraper {
         const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+
+        // Scroll a bit to trigger lazy loading if any
+        await page.evaluate(() => window.scrollBy(0, 1000));
+        await this.randomDelay(1000, 2000);
 
         // Use more stable data attributes or generic selectors if possible
         await page
-          .waitForSelector('[data-qa="product-card"]', { timeout: 10000 })
+          .waitForSelector('[data-qa="product-card"]', { timeout: 15000 })
           .catch(() => {});
 
         const content = await page.content();
@@ -68,7 +72,7 @@ export class CarrefourScraper extends BaseScraper {
         const context = await this.createContext(browser);
         const page = await context.newPage();
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
         const content = await page.content();
         const $ = cheerio.load(content);
         const product = this.normalize($);
