@@ -29,16 +29,16 @@ export class CarrefourScraper extends BaseScraper {
         const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+
+        // Use more stable data attributes or generic selectors if possible
+        await page
+          .waitForSelector('[data-qa="product-card"]', { timeout: 20000 })
+          .catch(() => {});
 
         // Scroll a bit to trigger lazy loading if any
         await page.evaluate(() => window.scrollBy(0, 1000));
         await this.randomDelay(1000, 2000);
-
-        // Use more stable data attributes or generic selectors if possible
-        await page
-          .waitForSelector('[data-qa="product-card"]', { timeout: 15000 })
-          .catch(() => {});
 
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -72,7 +72,8 @@ export class CarrefourScraper extends BaseScraper {
         const context = await this.createContext(browser);
         const page = await context.newPage();
 
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+        await page.waitForSelector('.css-10n5s6n', { timeout: 10000 }).catch(() => {});
         const content = await page.content();
         const $ = cheerio.load(content);
         const product = this.normalize($);
@@ -95,6 +96,8 @@ export class CarrefourScraper extends BaseScraper {
       ...chromium.args,
       '--disable-http2',
       '--disable-blink-features=AutomationControlled',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
     ];
 
     return await playwright.launch({

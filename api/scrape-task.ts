@@ -39,7 +39,8 @@ export default async (req: VercelRequest, res: VercelResponse) => {
   try {
     // Randomized delay to spread load on Vercel environment and avoid "thundering herd"
     // when multiple tasks are triggered simultaneously.
-    const staggerDelay = Math.floor(Math.random() * 20000); // 0-20 seconds
+    // Reduced to 0-5s to avoid Vercel timeout (60s).
+    const staggerDelay = Math.floor(Math.random() * 5000); // 0-5 seconds
     console.log(`Staggering worker start for ${store} in ${category_name} by ${staggerDelay}ms`);
     await new Promise((resolve) => setTimeout(resolve, staggerDelay));
 

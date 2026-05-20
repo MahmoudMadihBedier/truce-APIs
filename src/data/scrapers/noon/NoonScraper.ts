@@ -30,7 +30,7 @@ export class NoonScraper extends BaseScraper {
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
-          waitUntil: 'networkidle',
+          waitUntil: 'load',
           timeout: 60000,
         });
 
@@ -38,12 +38,12 @@ export class NoonScraper extends BaseScraper {
           throw new Error('Noon blocked request (403)');
         }
 
-        // Noon often needs a small delay for the hydrate step
-        await this.randomDelay(2000, 4000);
-
         await page
-          .waitForSelector('.productContainer', { timeout: 15000 })
+          .waitForSelector('.productContainer', { timeout: 25000 })
           .catch(() => {});
+
+        // Noon often needs a small delay for the hydrate step
+        await this.randomDelay(1000, 2000);
 
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -77,9 +77,10 @@ export class NoonScraper extends BaseScraper {
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'networkidle',
+          waitUntil: 'load',
           timeout: 60000,
         });
+        await page.waitForSelector('.priceNow', { timeout: 10000 }).catch(() => {});
         if (response?.status() === 403) {
           throw new Error('Noon blocked request (403)');
         }
@@ -106,6 +107,8 @@ export class NoonScraper extends BaseScraper {
       ...chromium.args,
       '--disable-http2',
       '--disable-blink-features=AutomationControlled',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
     ];
 
     return await playwright.launch({
