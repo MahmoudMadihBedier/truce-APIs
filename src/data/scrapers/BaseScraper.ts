@@ -74,6 +74,14 @@ export abstract class BaseScraper {
   }
 
   /**
+   * Generates a random delay between min and max milliseconds
+   */
+  protected async randomDelay(min = 1000, max = 5000): Promise<void> {
+    const delay = Math.floor(Math.random() * (max - min + 1) + min);
+    return new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  /**
    * Executes a task with retry logic
    * @param task The task to execute
    */

@@ -30,7 +30,7 @@ export class NoonScraper extends BaseScraper {
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
-          waitUntil: 'domcontentloaded',
+          waitUntil: 'networkidle',
           timeout: 60000,
         });
 
@@ -38,8 +38,11 @@ export class NoonScraper extends BaseScraper {
           throw new Error('Noon blocked request (403)');
         }
 
+        // Noon often needs a small delay for the hydrate step
+        await this.randomDelay(2000, 4000);
+
         await page
-          .waitForSelector('.productContainer', { timeout: 10000 })
+          .waitForSelector('.productContainer', { timeout: 15000 })
           .catch(() => {});
 
         const content = await page.content();
@@ -74,7 +77,7 @@ export class NoonScraper extends BaseScraper {
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'domcontentloaded',
+          waitUntil: 'networkidle',
           timeout: 60000,
         });
         if (response?.status() === 403) {

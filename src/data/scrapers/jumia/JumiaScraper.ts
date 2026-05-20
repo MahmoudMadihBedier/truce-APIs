@@ -31,14 +31,17 @@ export class JumiaScraper extends BaseScraper {
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
-          waitUntil: 'domcontentloaded',
+          waitUntil: 'networkidle',
           timeout: 60000,
         });
 
         await this.checkBlocked(page, response?.status());
 
+        // Wait a bit for images to load as they might have the data
+        await this.randomDelay(1000, 3000);
+
         await page
-          .waitForSelector('.prd._fb.col.c-prd', { timeout: 15000 })
+          .waitForSelector('.prd._fb.col.c-prd', { timeout: 20000 })
           .catch(() => {});
 
         const content = await page.content();
@@ -73,7 +76,7 @@ export class JumiaScraper extends BaseScraper {
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'domcontentloaded',
+          waitUntil: 'networkidle',
           timeout: 60000,
         });
         await this.checkBlocked(page, response?.status());
