@@ -1,11 +1,9 @@
 node_modules
 dist
-public
 .vercel
 .env
 coverage
 *.log
-*.html
 api/*.js
 src/**/*.js
 tests/*.js
