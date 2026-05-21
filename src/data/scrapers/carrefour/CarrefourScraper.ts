@@ -22,6 +22,29 @@ export class CarrefourScraper extends BaseScraper {
    * @returns List of scraped products
    */
   async scrape(category = '/mafegy/en/c/FEGY1000000'): Promise<Product[]> {
+    const targetUrl = `${this.baseUrl}${category}`;
+
+    // ScraperAPI path: routes through residential IPs, bypassing the IP blocks
+    // that Vercel/AWS faces. Carrefour is a Next.js app — the initial SSR HTML
+    // contains __NEXT_DATA__ with product listings, no JS rendering needed.
+    const html = await this.fetchViaScraperApi(targetUrl, false);
+    if (html) {
+      // Try structured JSON from Next.js first (stable, doesn't break with CSS changes)
+      const nextDataProducts = this.extractNextDataFromHtml(html);
+      if (nextDataProducts.length > 0) {
+        console.log(`Carrefour: got ${nextDataProducts.length} products from __NEXT_DATA__ via ScraperAPI`);
+        return nextDataProducts;
+      }
+      // Fall back to HTML parsing from ScraperAPI response
+      const products = this.parseProductsFromHtml(html);
+      if (products.length > 0) {
+        console.log(`Carrefour: got ${products.length} products via ScraperAPI HTML parsing`);
+        return products;
+      }
+      console.warn('Carrefour: ScraperAPI returned HTML but found no products, falling back to browser');
+    }
+
+    // Playwright fallback (may time out from Vercel IPs; configure PROXY_URL to fix)
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
@@ -30,44 +53,30 @@ export class CarrefourScraper extends BaseScraper {
         await this.applyStealthToContext(context);
         const page = await context.newPage();
 
-        const url = `${this.baseUrl}${category}`;
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-        // Wait for JS rendering to settle after initial DOM is ready
         try {
           await page.waitForLoadState('networkidle', { timeout: 15000 });
         } catch {
-          // Continue with whatever content is already loaded
+          // Continue with whatever is loaded
         }
 
         await page
           .waitForSelector('[data-qa="product-card"]', { timeout: 15000 })
           .catch(() => {});
 
-        // Scroll to trigger any lazy-loaded content
         await page.evaluate(() => window.scrollBy(0, 1000));
         await this.randomDelay(1000, 2000);
 
-        // Prefer structured JSON embedded by Next.js — more reliable than CSS class selectors
+        // Try Next.js embedded data first (avoids brittle CSS class selectors)
         const nextDataProducts = await this.extractFromNextData(page);
         if (nextDataProducts && nextDataProducts.length > 0) {
-          console.log(`Carrefour: extracted ${nextDataProducts.length} products from __NEXT_DATA__`);
+          console.log(`Carrefour: got ${nextDataProducts.length} products from __NEXT_DATA__ via browser`);
           return nextDataProducts;
         }
 
-        // Fall back to HTML parsing
         const content = await page.content();
-        const $ = cheerio.load(content);
-        const products: Product[] = [];
-
-        $('[data-qa="product-card"], .css-176f571').each((_, el) => {
-          const product = this.parseProduct($(el));
-          if (product && product.product_name) {
-            products.push(product);
-          }
-        });
-
-        return products;
+        return this.parseProductsFromHtml(content);
       } finally {
         if (browser) await browser.close();
       }
@@ -80,6 +89,18 @@ export class CarrefourScraper extends BaseScraper {
    * @returns Scraped product entity
    */
   async scrapeProduct(url: string): Promise<Product> {
+    const html = await this.fetchViaScraperApi(url, false);
+    if (html) {
+      const $ = cheerio.load(html);
+      const product = this.normalize($);
+      product.product_url = url;
+      product.product_id = url.split('/').pop() || '';
+      if (product.product_name) {
+        console.log(`Carrefour: scraped product via ScraperAPI: ${product.product_name}`);
+        return product;
+      }
+    }
+
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
@@ -103,6 +124,109 @@ export class CarrefourScraper extends BaseScraper {
         if (browser) await browser.close();
       }
     });
+  }
+
+  private parseProductsFromHtml(html: string): Product[] {
+    const $ = cheerio.load(html);
+    const products: Product[] = [];
+    $('[data-qa="product-card"], .css-176f571').each((_, el) => {
+      const product = this.parseProduct($(el));
+      if (product && product.product_name) products.push(product);
+    });
+    return products;
+  }
+
+  /**
+   * Extracts products from Next.js __NEXT_DATA__ embedded in raw HTML.
+   * This is stable across Carrefour deploys, unlike hashed Emotion CSS classes.
+   */
+  private extractNextDataFromHtml(html: string): Product[] {
+    const match = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) return [];
+    try {
+      const data = JSON.parse(match[1]);
+      const pp = data?.props?.pageProps;
+      const items: any[] | null =
+        pp?.products ||
+        pp?.data?.products ||
+        pp?.initialData?.categoryListing?.entities ||
+        pp?.initialData?.productList?.products ||
+        pp?.initialState?.productList?.products ||
+        pp?.listing?.products ||
+        pp?.categoryData?.products ||
+        null;
+      if (!items || !Array.isArray(items)) return [];
+      return items
+        .map((item: any) => this.normalizeNextDataProduct(item))
+        .filter((p): p is Product => p !== null && !!p.product_name);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Extracts products from Next.js __NEXT_DATA__ via page.evaluate (browser path).
+   */
+  private async extractFromNextData(page: Page): Promise<Product[] | null> {
+    const raw = await page.evaluate(() => {
+      const el = document.getElementById('__NEXT_DATA__');
+      if (!el || !el.textContent) return null;
+      try {
+        return JSON.parse(el.textContent);
+      } catch {
+        return null;
+      }
+    });
+    if (!raw) return null;
+    const synthHtml = `<script id="__NEXT_DATA__">${JSON.stringify(raw)}</script>`;
+    const products = this.extractNextDataFromHtml(synthHtml);
+    return products.length > 0 ? products : null;
+  }
+
+  private normalizeNextDataProduct(item: any): Product | null {
+    try {
+      const name = item?.name || item?.title || '';
+      if (!name) return null;
+      const price =
+        typeof item?.price === 'object'
+          ? (item.price?.value ?? item.price?.current ?? 0)
+          : Number(item?.price ?? item?.salePrice ?? 0);
+      const oldPriceRaw = item?.oldPrice ?? item?.regularPrice ?? null;
+      const oldPrice =
+        oldPriceRaw == null
+          ? null
+          : typeof oldPriceRaw === 'object'
+          ? (oldPriceRaw?.value ?? null)
+          : Number(oldPriceRaw);
+      const imageUrl =
+        item?.imageUrl ||
+        item?.image ||
+        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
+        '';
+      const urlPath = item?.url || item?.productUrl || item?.slug || '';
+      const fullUrl = urlPath.startsWith('http') ? urlPath : `${this.baseUrl}${urlPath}`;
+      const productId = String(
+        item?.id || item?.sku || item?.productId || urlPath.split('/').pop() || 'unknown',
+      );
+      const inStock = item?.inStock ?? item?.isAvailable ?? true;
+      return {
+        product_id: productId,
+        product_name: name,
+        product_category: 'Carrefour | Supermarket',
+        brand_name: item?.brand || item?.brandName || 'Unknown',
+        product_url: fullUrl,
+        current_price_egp: price || 0,
+        previous_price_egp: oldPrice,
+        product_image_url: imageUrl,
+        store_name: 'Carrefour Egypt',
+        discounts_offers: null,
+        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
+        location_city: 'Cairo',
+        last_updated_utc: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
   }
 
   private async launchBrowser(): Promise<Browser> {
@@ -145,16 +269,13 @@ export class CarrefourScraper extends BaseScraper {
 
   /**
    * Injects scripts before any page JS runs to mask automation signals.
-   * Runs on every navigation in the context.
    */
   private async applyStealthToContext(context: BrowserContext): Promise<void> {
     await context.addInitScript(() => {
-      // Most critical: hide webdriver flag checked by Cloudflare and other bot detectors
       Object.defineProperty(navigator, 'webdriver', {
         get: () => undefined,
         configurable: true,
       });
-      // Headless Chrome omits window.chrome — add it so the page thinks it's a real browser
       if (!(window as any).chrome) {
         (window as any).chrome = {
           runtime: {},
@@ -163,7 +284,6 @@ export class CarrefourScraper extends BaseScraper {
           app: {},
         };
       }
-      // Headless Chrome has zero plugins — fake a realistic set
       Object.defineProperty(navigator, 'plugins', {
         get: () => {
           const ps = [
@@ -179,97 +299,6 @@ export class CarrefourScraper extends BaseScraper {
         get: () => ['en-US', 'en', 'ar'],
       });
     });
-  }
-
-  /**
-   * Attempts to extract product list from Next.js __NEXT_DATA__ script tag.
-   * This is more reliable than CSS class selectors because data-qa attributes
-   * and JSON keys are stable, while Emotion CSS hashes change on every deploy.
-   */
-  private async extractFromNextData(page: Page): Promise<Product[] | null> {
-    const raw = await page.evaluate(() => {
-      const el = document.getElementById('__NEXT_DATA__');
-      if (!el || !el.textContent) return null;
-      try {
-        return JSON.parse(el.textContent);
-      } catch {
-        return null;
-      }
-    });
-
-    if (!raw) return null;
-
-    const pp = (raw as any)?.props?.pageProps;
-    const items: any[] | null =
-      pp?.products ||
-      pp?.data?.products ||
-      pp?.initialData?.categoryListing?.entities ||
-      pp?.initialData?.productList?.products ||
-      pp?.initialState?.productList?.products ||
-      pp?.listing?.products ||
-      pp?.categoryData?.products ||
-      null;
-
-    if (!items || !Array.isArray(items)) return null;
-
-    const products: Product[] = [];
-    for (const item of items) {
-      const p = this.normalizeNextDataProduct(item);
-      if (p && p.product_name) products.push(p);
-    }
-    return products.length > 0 ? products : null;
-  }
-
-  private normalizeNextDataProduct(item: any): Product | null {
-    try {
-      const name = item?.name || item?.title || '';
-      if (!name) return null;
-
-      const price =
-        typeof item?.price === 'object'
-          ? (item.price?.value ?? item.price?.current ?? 0)
-          : Number(item?.price ?? item?.salePrice ?? 0);
-
-      const oldPriceRaw = item?.oldPrice ?? item?.regularPrice ?? null;
-      const oldPrice =
-        oldPriceRaw == null
-          ? null
-          : typeof oldPriceRaw === 'object'
-          ? (oldPriceRaw?.value ?? null)
-          : Number(oldPriceRaw);
-
-      const imageUrl =
-        item?.imageUrl ||
-        item?.image ||
-        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
-        '';
-
-      const urlPath = item?.url || item?.productUrl || item?.slug || '';
-      const fullUrl = urlPath.startsWith('http') ? urlPath : `${this.baseUrl}${urlPath}`;
-      const productId = String(
-        item?.id || item?.sku || item?.productId || urlPath.split('/').pop() || 'unknown',
-      );
-
-      const inStock = item?.inStock ?? item?.isAvailable ?? true;
-
-      return {
-        product_id: productId,
-        product_name: name,
-        product_category: 'Carrefour | Supermarket',
-        brand_name: item?.brand || item?.brandName || 'Unknown',
-        product_url: fullUrl,
-        current_price_egp: price || 0,
-        previous_price_egp: oldPrice,
-        product_image_url: imageUrl,
-        store_name: 'Carrefour Egypt',
-        discounts_offers: null,
-        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
-        location_city: 'Cairo',
-        last_updated_utc: new Date().toISOString(),
-      };
-    } catch {
-      return null;
-    }
   }
 
   /**

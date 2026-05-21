@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { Product } from '../../domain/entities/Product';
 
 /**
@@ -45,6 +46,42 @@ export abstract class BaseScraper {
   protected abstract normalize(data: unknown): Product;
 
   /**
+   * Fetches a URL via ScraperAPI, which routes through residential IPs and handles
+   * anti-bot measures. This bypasses the IP-level blocks that cloud providers
+   * (Vercel/AWS) face from Egyptian e-commerce sites.
+   *
+   * Requires SCRAPERAPI_KEY env var. Returns null if key is missing or request fails,
+   * so callers can fall through to the Playwright browser path.
+   *
+   * @param url Target URL to fetch
+   * @param render Whether to execute JavaScript before returning HTML (needed for SPAs)
+   */
+  protected async fetchViaScraperApi(url: string, render = false): Promise<string | null> {
+    const apiKey = process.env.SCRAPERAPI_KEY;
+    if (!apiKey) return null;
+    try {
+      const params = new URLSearchParams({
+        api_key: apiKey,
+        url,
+        country_code: 'eg',
+        keep_headers: 'true',
+      });
+      if (render) params.set('render', 'true');
+      const apiUrl = `https://api.scraperapi.com?${params.toString()}`;
+      console.log(`Fetching via ScraperAPI (render=${render}): ${url}`);
+      const response = await axios.get<string>(apiUrl, {
+        timeout: 50000,
+        headers: { 'Accept': 'text/html,application/xhtml+xml' },
+      });
+      const html = typeof response.data === 'string' ? response.data : String(response.data);
+      return html.length > 500 ? html : null;
+    } catch (err) {
+      console.warn(`ScraperAPI fetch failed for ${url}: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
    * Ensures the lambda environment is properly set up with necessary library paths.
    * Chromium on Vercel (AWS Lambda) requires specific shared libraries extracted to /tmp.
    */
@@ -65,9 +102,6 @@ export abstract class BaseScraper {
 
       process.env.LD_LIBRARY_PATH = parts.join(':');
       process.env.FONTCONFIG_PATH = '/tmp/fonts';
-
-      // Force extraction of shared libraries if they are missing
-      // By calling a dummy method or checking existence if needed
 
       console.log(`Environment setup: LD_LIBRARY_PATH=${process.env.LD_LIBRARY_PATH}`);
     }

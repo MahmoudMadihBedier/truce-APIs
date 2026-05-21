@@ -3,7 +3,6 @@ import {
   chromium as playwright,
   Browser,
   BrowserContext,
-  Page,
   Response,
 } from 'playwright-core';
 import * as cheerio from 'cheerio';
@@ -23,6 +22,28 @@ export class NoonScraper extends BaseScraper {
    * @returns List of scraped products
    */
   async scrape(category = '/egypt-en/electronics/'): Promise<Product[]> {
+    const targetUrl = `${this.baseUrl}${category}`;
+
+    // ScraperAPI path with render=true: Noon is a React SPA so JS must execute
+    // to populate product listings. ScraperAPI handles this via headless browser
+    // on residential IPs, bypassing the cloud IP blocks Vercel faces.
+    const html = await this.fetchViaScraperApi(targetUrl, true);
+    if (html) {
+      const products = this.parseProductsFromHtml(html);
+      if (products.length > 0) {
+        console.log(`Noon: got ${products.length} products via ScraperAPI`);
+        return products;
+      }
+      // ScraperAPI rendered but found no product containers — try embedded state
+      const embedded = this.extractFromEmbeddedHtml(html);
+      if (embedded.length > 0) {
+        console.log(`Noon: got ${embedded.length} products from embedded data via ScraperAPI`);
+        return embedded;
+      }
+      console.warn('Noon: ScraperAPI returned HTML but found no products, falling back to browser');
+    }
+
+    // Playwright fallback (may be blocked from cloud IPs without a proxy)
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
@@ -37,7 +58,6 @@ export class NoonScraper extends BaseScraper {
           const url = response.url();
           const contentType = response.headers()['content-type'] || '';
           if (!contentType.includes('application/json')) return;
-          // Only inspect URLs that look like catalog or search endpoints
           if (!/catalog|search|product|listing|browse/i.test(url)) return;
           try {
             const body = await response.json();
@@ -50,13 +70,12 @@ export class NoonScraper extends BaseScraper {
               [];
             if (items.length > 0) capturedApiItems.push(...items);
           } catch {
-            // Ignore parse errors from non-product JSON responses
+            // Ignore parse errors from non-product JSON
           }
         };
         page.on('response', handleResponse);
 
-        const url = `${this.baseUrl}${category}`;
-        const response = await page.goto(url, {
+        const response = await page.goto(targetUrl, {
           waitUntil: 'domcontentloaded',
           timeout: 45000,
         });
@@ -65,7 +84,6 @@ export class NoonScraper extends BaseScraper {
           throw new Error('Noon blocked request (403)');
         }
 
-        // Wait for JS rendering to settle
         try {
           await page.waitForLoadState('networkidle', { timeout: 15000 });
         } catch {
@@ -79,7 +97,6 @@ export class NoonScraper extends BaseScraper {
         await this.randomDelay(1000, 2000);
         page.off('response', handleResponse);
 
-        // If API interception captured product data, normalize and return it
         if (capturedApiItems.length > 0) {
           console.log(`Noon: captured ${capturedApiItems.length} products from API responses`);
           const products = capturedApiItems
@@ -88,26 +105,8 @@ export class NoonScraper extends BaseScraper {
           if (products.length > 0) return products;
         }
 
-        // Try embedded JSON data (Next.js __NEXT_DATA__ or window state)
-        const embeddedProducts = await this.extractFromEmbeddedData(page);
-        if (embeddedProducts && embeddedProducts.length > 0) {
-          console.log(`Noon: extracted ${embeddedProducts.length} products from embedded data`);
-          return embeddedProducts;
-        }
-
-        // Fall back to HTML parsing
         const content = await page.content();
-        const $ = cheerio.load(content);
-        const products: Product[] = [];
-
-        $('.productContainer').each((_, el) => {
-          const product = this.parseProduct($(el));
-          if (product && product.product_name) {
-            products.push(product);
-          }
-        });
-
-        return products;
+        return this.parseProductsFromHtml(content);
       } finally {
         if (browser) await browser.close();
       }
@@ -120,6 +119,18 @@ export class NoonScraper extends BaseScraper {
    * @returns Scraped product entity
    */
   async scrapeProduct(url: string): Promise<Product> {
+    const html = await this.fetchViaScraperApi(url, true);
+    if (html) {
+      const $ = cheerio.load(html);
+      const product = this.normalize($);
+      product.product_url = url;
+      product.product_id = url.split('/').pop()?.split('?').shift() || '';
+      if (product.product_name) {
+        console.log(`Noon: scraped product via ScraperAPI: ${product.product_name}`);
+        return product;
+      }
+    }
+
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
@@ -150,6 +161,113 @@ export class NoonScraper extends BaseScraper {
         if (browser) await browser.close();
       }
     });
+  }
+
+  private parseProductsFromHtml(html: string): Product[] {
+    const $ = cheerio.load(html);
+    const products: Product[] = [];
+    $('.productContainer').each((_, el) => {
+      const product = this.parseProduct($(el));
+      if (product && product.product_name) products.push(product);
+    });
+    return products;
+  }
+
+  /**
+   * Tries to extract products from embedded JavaScript state objects in the HTML.
+   * Noon may expose initial state via window.__INITIAL_STATE__ or Next.js __NEXT_DATA__.
+   */
+  private extractFromEmbeddedHtml(html: string): Product[] {
+    // Try Next.js __NEXT_DATA__
+    const nextMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextMatch) {
+      try {
+        const data = JSON.parse(nextMatch[1]);
+        const pp = data?.props?.pageProps;
+        const items: any[] | null =
+          pp?.products ||
+          pp?.data?.products ||
+          pp?.initialData?.products ||
+          pp?.catalog?.products ||
+          null;
+        if (items && Array.isArray(items) && items.length > 0) {
+          return items
+            .map((item: any) => this.normalizeApiProduct(item))
+            .filter((p): p is Product => p !== null && !!p.product_name);
+        }
+      } catch {}
+    }
+
+    // Try inline window state scripts
+    const stateMatch = html.match(/(?:__INITIAL_STATE__|__REDUX_STATE__|__PRELOADED_STATE__)\s*=\s*({[\s\S]*?});/);
+    if (stateMatch) {
+      try {
+        const state = JSON.parse(stateMatch[1]);
+        const items: any[] | null =
+          state?.catalog?.products ||
+          state?.listing?.products ||
+          state?.search?.products ||
+          null;
+        if (items && Array.isArray(items) && items.length > 0) {
+          return items
+            .map((item: any) => this.normalizeApiProduct(item))
+            .filter((p): p is Product => p !== null && !!p.product_name);
+        }
+      } catch {}
+    }
+
+    return [];
+  }
+
+  private normalizeApiProduct(item: any): Product | null {
+    try {
+      const name = item?.name || item?.title || item?.product_name || '';
+      if (!name) return null;
+      const price =
+        typeof item?.price === 'object'
+          ? (item.price?.value ?? item.price?.now ?? item.price?.current ?? 0)
+          : Number(item?.price ?? item?.salePrice ?? item?.now_price ?? 0);
+      const oldPriceRaw = item?.oldPrice ?? item?.was_price ?? item?.regularPrice ?? null;
+      const oldPrice =
+        oldPriceRaw == null
+          ? null
+          : typeof oldPriceRaw === 'object'
+          ? (oldPriceRaw?.value ?? null)
+          : Number(oldPriceRaw);
+      const imageUrl =
+        item?.imageUrl ||
+        item?.image_url ||
+        item?.image ||
+        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
+        '';
+      const urlPath = item?.url || item?.productUrl || item?.slug || '';
+      const fullUrl = urlPath.startsWith('http')
+        ? urlPath
+        : urlPath
+        ? `${this.baseUrl}${urlPath}`
+        : '';
+      const productId = String(
+        item?.id || item?.sku || item?.product_id || urlPath.split('/').pop()?.split('?').shift() || 'unknown',
+      );
+      const inStock = item?.inStock ?? item?.is_available ?? item?.available ?? true;
+      return {
+        product_id: productId,
+        product_name: name,
+        product_category: 'Noon | Category',
+        brand_name: item?.brand || item?.brand_name || 'Unknown',
+        product_url: fullUrl,
+        current_price_egp: price || 0,
+        previous_price_egp: oldPrice,
+        product_image_url: imageUrl,
+        store_name: 'Noon Egypt',
+        discounts_offers: item?.discount || item?.promo || null,
+        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
+        location_city: 'Cairo',
+        last_updated_utc: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
   }
 
   private async launchBrowser(): Promise<Browser> {
@@ -192,16 +310,13 @@ export class NoonScraper extends BaseScraper {
 
   /**
    * Injects scripts before any page JS runs to mask automation signals.
-   * Runs on every navigation in the context.
    */
   private async applyStealthToContext(context: BrowserContext): Promise<void> {
     await context.addInitScript(() => {
-      // Most critical: hide webdriver flag checked by Cloudflare and other bot detectors
       Object.defineProperty(navigator, 'webdriver', {
         get: () => undefined,
         configurable: true,
       });
-      // Headless Chrome omits window.chrome — add it so the page thinks it's a real browser
       if (!(window as any).chrome) {
         (window as any).chrome = {
           runtime: {},
@@ -210,7 +325,6 @@ export class NoonScraper extends BaseScraper {
           app: {},
         };
       }
-      // Headless Chrome has zero plugins — fake a realistic set
       Object.defineProperty(navigator, 'plugins', {
         get: () => {
           const ps = [
@@ -226,121 +340,6 @@ export class NoonScraper extends BaseScraper {
         get: () => ['en-US', 'en', 'ar'],
       });
     });
-  }
-
-  /**
-   * Tries to pull product data from JavaScript state objects embedded in the
-   * page before HTML parsing. Noon is a React SPA that may expose initial state
-   * via window.__INITIAL_STATE__ or Next.js __NEXT_DATA__.
-   */
-  private async extractFromEmbeddedData(page: Page): Promise<Product[] | null> {
-    const items = await page.evaluate(() => {
-      const w = window as any;
-
-      // Redux / custom store state
-      const state =
-        w.__INITIAL_STATE__ ||
-        w.__STORE_STATE__ ||
-        w.__REDUX_STATE__ ||
-        w.__PRELOADED_STATE__ ||
-        null;
-      if (state) {
-        const products =
-          state?.catalog?.products ||
-          state?.listing?.products ||
-          state?.productList?.items ||
-          state?.search?.products ||
-          null;
-        if (products && Array.isArray(products) && products.length > 0) return products;
-      }
-
-      // Next.js server-rendered data
-      const nextEl = document.getElementById('__NEXT_DATA__');
-      if (nextEl?.textContent) {
-        try {
-          const nd = JSON.parse(nextEl.textContent);
-          const pp = nd?.props?.pageProps;
-          const ndProducts =
-            pp?.products ||
-            pp?.data?.products ||
-            pp?.initialData?.products ||
-            pp?.catalog?.products ||
-            pp?.categoryData?.products ||
-            null;
-          if (ndProducts && Array.isArray(ndProducts) && ndProducts.length > 0) return ndProducts;
-        } catch {}
-      }
-
-      return null;
-    });
-
-    if (!items || !Array.isArray(items) || items.length === 0) return null;
-
-    const products = items
-      .map((item: any) => this.normalizeApiProduct(item))
-      .filter((p): p is Product => p !== null && !!p.product_name);
-    return products.length > 0 ? products : null;
-  }
-
-  /**
-   * Normalizes a raw product object from API or embedded JSON into the unified schema.
-   */
-  private normalizeApiProduct(item: any): Product | null {
-    try {
-      const name = item?.name || item?.title || item?.product_name || '';
-      if (!name) return null;
-
-      const price =
-        typeof item?.price === 'object'
-          ? (item.price?.value ?? item.price?.now ?? item.price?.current ?? 0)
-          : Number(item?.price ?? item?.salePrice ?? item?.now_price ?? 0);
-
-      const oldPriceRaw = item?.oldPrice ?? item?.was_price ?? item?.regularPrice ?? null;
-      const oldPrice =
-        oldPriceRaw == null
-          ? null
-          : typeof oldPriceRaw === 'object'
-          ? (oldPriceRaw?.value ?? null)
-          : Number(oldPriceRaw);
-
-      const imageUrl =
-        item?.imageUrl ||
-        item?.image_url ||
-        item?.image ||
-        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
-        '';
-
-      const urlPath = item?.url || item?.productUrl || item?.slug || '';
-      const fullUrl = urlPath.startsWith('http')
-        ? urlPath
-        : urlPath
-        ? `${this.baseUrl}${urlPath}`
-        : '';
-
-      const productId = String(
-        item?.id || item?.sku || item?.product_id || urlPath.split('/').pop()?.split('?').shift() || 'unknown',
-      );
-
-      const inStock = item?.inStock ?? item?.is_available ?? item?.available ?? true;
-
-      return {
-        product_id: productId,
-        product_name: name,
-        product_category: 'Noon | Category',
-        brand_name: item?.brand || item?.brand_name || 'Unknown',
-        product_url: fullUrl,
-        current_price_egp: price || 0,
-        previous_price_egp: oldPrice,
-        product_image_url: imageUrl,
-        store_name: 'Noon Egypt',
-        discounts_offers: item?.discount || item?.promo || null,
-        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
-        location_city: 'Cairo',
-        last_updated_utc: new Date().toISOString(),
-      };
-    } catch {
-      return null;
-    }
   }
 
   /**

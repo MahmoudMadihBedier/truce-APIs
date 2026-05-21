@@ -22,6 +22,22 @@ export class JumiaScraper extends BaseScraper {
    * @returns List of scraped products
    */
   async scrape(category = '/all-products/'): Promise<Product[]> {
+    const targetUrl = `${this.baseUrl}${category}`;
+
+    // ScraperAPI path: routes through residential IPs, bypassing the 403 that
+    // Vercel's AWS IP range receives from Jumia. Jumia is server-side rendered,
+    // so no JS execution (render=false) is needed — raw HTML has the products.
+    const html = await this.fetchViaScraperApi(targetUrl, false);
+    if (html) {
+      const products = this.parseProductsFromHtml(html);
+      if (products.length > 0) {
+        console.log(`Jumia: got ${products.length} products via ScraperAPI`);
+        return products;
+      }
+      console.warn('Jumia: ScraperAPI returned HTML but found no products, falling back to browser');
+    }
+
+    // Playwright fallback (may be blocked from cloud IPs without a proxy)
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
@@ -30,17 +46,14 @@ export class JumiaScraper extends BaseScraper {
         await this.applyStealthToContext(context);
         const page = await context.newPage();
 
-        const url = `${this.baseUrl}${category}`;
-        const response = await page.goto(url, {
+        const response = await page.goto(targetUrl, {
           waitUntil: 'domcontentloaded',
           timeout: 45000,
         });
 
-        // Resolve Cloudflare challenge before throwing — the JS challenge
-        // typically auto-completes within seconds when webdriver is hidden
+        // Resolve Cloudflare "Just a moment" challenge instead of throwing immediately
         await this.checkBlocked(page, response?.status());
 
-        // Wait for actual product content after any challenge resolution
         await page
           .waitForSelector('.prd._fb.col.c-prd', { timeout: 20000 })
           .catch(() => {});
@@ -48,17 +61,7 @@ export class JumiaScraper extends BaseScraper {
         await this.randomDelay(1000, 2000);
 
         const content = await page.content();
-        const $ = cheerio.load(content);
-        const products: Product[] = [];
-
-        $('.prd._fb.col.c-prd').each((_, el) => {
-          const product = this.parseProduct($(el));
-          if (product && product.product_name) {
-            products.push(product);
-          }
-        });
-
-        return products;
+        return this.parseProductsFromHtml(content);
       } finally {
         if (browser) await browser.close();
       }
@@ -71,6 +74,18 @@ export class JumiaScraper extends BaseScraper {
    * @returns Scraped product entity
    */
   async scrapeProduct(url: string): Promise<Product> {
+    // Try ScraperAPI first
+    const html = await this.fetchViaScraperApi(url, false);
+    if (html) {
+      const $ = cheerio.load(html);
+      const product = this.normalize($);
+      product.product_url = url;
+      if (product.product_name) {
+        console.log(`Jumia: scraped product via ScraperAPI: ${product.product_name}`);
+        return product;
+      }
+    }
+
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
@@ -95,6 +110,16 @@ export class JumiaScraper extends BaseScraper {
         if (browser) await browser.close();
       }
     });
+  }
+
+  private parseProductsFromHtml(html: string): Product[] {
+    const $ = cheerio.load(html);
+    const products: Product[] = [];
+    $('.prd._fb.col.c-prd').each((_, el) => {
+      const product = this.parseProduct($(el));
+      if (product && product.product_name) products.push(product);
+    });
+    return products;
   }
 
   private async launchBrowser(): Promise<Browser> {
@@ -137,16 +162,13 @@ export class JumiaScraper extends BaseScraper {
 
   /**
    * Injects scripts before any page JS runs to mask automation signals.
-   * Runs on every navigation in the context.
    */
   private async applyStealthToContext(context: BrowserContext): Promise<void> {
     await context.addInitScript(() => {
-      // Most critical: hide webdriver flag checked by Cloudflare and other bot detectors
       Object.defineProperty(navigator, 'webdriver', {
         get: () => undefined,
         configurable: true,
       });
-      // Headless Chrome omits window.chrome — add it so the page thinks it's a real browser
       if (!(window as any).chrome) {
         (window as any).chrome = {
           runtime: {},
@@ -155,7 +177,6 @@ export class JumiaScraper extends BaseScraper {
           app: {},
         };
       }
-      // Headless Chrome has zero plugins — fake a realistic set
       Object.defineProperty(navigator, 'plugins', {
         get: () => {
           const ps = [
@@ -174,15 +195,13 @@ export class JumiaScraper extends BaseScraper {
   }
 
   /**
-   * Detects bot blocking. For Cloudflare's "Just a moment" challenge page,
-   * waits up to 20s for the JS challenge to auto-resolve instead of throwing
-   * immediately — with stealth measures applied, this challenge typically passes.
+   * Detects blocking. For Cloudflare's "Just a moment" JS challenge, waits up to
+   * 20s for it to auto-resolve rather than throwing immediately.
    */
   private async checkBlocked(page: Page, status?: number): Promise<void> {
     if (status === 403) {
       throw new Error('Jumia blocked request (403 Forbidden)');
     }
-
     const title = await page.title();
     if (title.includes('Just a moment')) {
       console.log('Cloudflare challenge detected on Jumia, waiting up to 20s for resolution...');
