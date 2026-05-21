@@ -3,6 +3,7 @@ import {
   chromium as playwright,
   Browser,
   BrowserContext,
+  Page,
 } from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
@@ -26,25 +27,39 @@ export class CarrefourScraper extends BaseScraper {
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
-        await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-        // Use more stable data attributes or generic selectors if possible
+        // Wait for JS rendering to settle after initial DOM is ready
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {
+          // Continue with whatever content is already loaded
+        }
+
         await page
-          .waitForSelector('[data-qa="product-card"]', { timeout: 20000 })
+          .waitForSelector('[data-qa="product-card"]', { timeout: 15000 })
           .catch(() => {});
 
-        // Scroll a bit to trigger lazy loading if any
+        // Scroll to trigger any lazy-loaded content
         await page.evaluate(() => window.scrollBy(0, 1000));
         await this.randomDelay(1000, 2000);
 
+        // Prefer structured JSON embedded by Next.js — more reliable than CSS class selectors
+        const nextDataProducts = await this.extractFromNextData(page);
+        if (nextDataProducts && nextDataProducts.length > 0) {
+          console.log(`Carrefour: extracted ${nextDataProducts.length} products from __NEXT_DATA__`);
+          return nextDataProducts;
+        }
+
+        // Fall back to HTML parsing
         const content = await page.content();
         const $ = cheerio.load(content);
         const products: Product[] = [];
 
-        // Try both hashed and data-qa selectors
         $('[data-qa="product-card"], .css-176f571').each((_, el) => {
           const product = this.parseProduct($(el));
           if (product && product.product_name) {
@@ -70,9 +85,13 @@ export class CarrefourScraper extends BaseScraper {
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
-        await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {}
         await page.waitForSelector('.css-10n5s6n', { timeout: 10000 }).catch(() => {});
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -91,7 +110,6 @@ export class CarrefourScraper extends BaseScraper {
     const executablePath = await chromium.executablePath();
     console.log(`Launching Carrefour browser with executablePath: ${executablePath}`);
 
-    // Add stealth and stability flags
     const args = [
       ...chromium.args,
       '--disable-http2',
@@ -123,6 +141,135 @@ export class CarrefourScraper extends BaseScraper {
         'Sec-CH-UA-Platform': '"Windows"',
       },
     });
+  }
+
+  /**
+   * Injects scripts before any page JS runs to mask automation signals.
+   * Runs on every navigation in the context.
+   */
+  private async applyStealthToContext(context: BrowserContext): Promise<void> {
+    await context.addInitScript(() => {
+      // Most critical: hide webdriver flag checked by Cloudflare and other bot detectors
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+      });
+      // Headless Chrome omits window.chrome — add it so the page thinks it's a real browser
+      if (!(window as any).chrome) {
+        (window as any).chrome = {
+          runtime: {},
+          loadTimes: function () {},
+          csi: function () {},
+          app: {},
+        };
+      }
+      // Headless Chrome has zero plugins — fake a realistic set
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const ps = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ];
+          (ps as any).refresh = function () {};
+          return ps;
+        },
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en', 'ar'],
+      });
+    });
+  }
+
+  /**
+   * Attempts to extract product list from Next.js __NEXT_DATA__ script tag.
+   * This is more reliable than CSS class selectors because data-qa attributes
+   * and JSON keys are stable, while Emotion CSS hashes change on every deploy.
+   */
+  private async extractFromNextData(page: Page): Promise<Product[] | null> {
+    const raw = await page.evaluate(() => {
+      const el = document.getElementById('__NEXT_DATA__');
+      if (!el || !el.textContent) return null;
+      try {
+        return JSON.parse(el.textContent);
+      } catch {
+        return null;
+      }
+    });
+
+    if (!raw) return null;
+
+    const pp = (raw as any)?.props?.pageProps;
+    const items: any[] | null =
+      pp?.products ||
+      pp?.data?.products ||
+      pp?.initialData?.categoryListing?.entities ||
+      pp?.initialData?.productList?.products ||
+      pp?.initialState?.productList?.products ||
+      pp?.listing?.products ||
+      pp?.categoryData?.products ||
+      null;
+
+    if (!items || !Array.isArray(items)) return null;
+
+    const products: Product[] = [];
+    for (const item of items) {
+      const p = this.normalizeNextDataProduct(item);
+      if (p && p.product_name) products.push(p);
+    }
+    return products.length > 0 ? products : null;
+  }
+
+  private normalizeNextDataProduct(item: any): Product | null {
+    try {
+      const name = item?.name || item?.title || '';
+      if (!name) return null;
+
+      const price =
+        typeof item?.price === 'object'
+          ? (item.price?.value ?? item.price?.current ?? 0)
+          : Number(item?.price ?? item?.salePrice ?? 0);
+
+      const oldPriceRaw = item?.oldPrice ?? item?.regularPrice ?? null;
+      const oldPrice =
+        oldPriceRaw == null
+          ? null
+          : typeof oldPriceRaw === 'object'
+          ? (oldPriceRaw?.value ?? null)
+          : Number(oldPriceRaw);
+
+      const imageUrl =
+        item?.imageUrl ||
+        item?.image ||
+        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
+        '';
+
+      const urlPath = item?.url || item?.productUrl || item?.slug || '';
+      const fullUrl = urlPath.startsWith('http') ? urlPath : `${this.baseUrl}${urlPath}`;
+      const productId = String(
+        item?.id || item?.sku || item?.productId || urlPath.split('/').pop() || 'unknown',
+      );
+
+      const inStock = item?.inStock ?? item?.isAvailable ?? true;
+
+      return {
+        product_id: productId,
+        product_name: name,
+        product_category: 'Carrefour | Supermarket',
+        brand_name: item?.brand || item?.brandName || 'Unknown',
+        product_url: fullUrl,
+        current_price_egp: price || 0,
+        previous_price_egp: oldPrice,
+        product_image_url: imageUrl,
+        store_name: 'Carrefour Egypt',
+        discounts_offers: null,
+        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
+        location_city: 'Cairo',
+        last_updated_utc: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**

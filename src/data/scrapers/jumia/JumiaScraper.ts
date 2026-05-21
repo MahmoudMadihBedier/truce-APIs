@@ -27,21 +27,24 @@ export class JumiaScraper extends BaseScraper {
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
-          waitUntil: 'load',
-          timeout: 60000,
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
         });
 
+        // Resolve Cloudflare challenge before throwing — the JS challenge
+        // typically auto-completes within seconds when webdriver is hidden
         await this.checkBlocked(page, response?.status());
 
+        // Wait for actual product content after any challenge resolution
         await page
           .waitForSelector('.prd._fb.col.c-prd', { timeout: 20000 })
           .catch(() => {});
 
-        // Wait a bit for images to load as they might have the data
         await this.randomDelay(1000, 2000);
 
         const content = await page.content();
@@ -73,11 +76,12 @@ export class JumiaScraper extends BaseScraper {
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'load',
-          timeout: 60000,
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
         });
         await this.checkBlocked(page, response?.status());
         await page.waitForSelector('.prc', { timeout: 10000 }).catch(() => {});
@@ -98,7 +102,6 @@ export class JumiaScraper extends BaseScraper {
     const executablePath = await chromium.executablePath();
     console.log(`Launching Jumia browser with executablePath: ${executablePath}`);
 
-    // Add stealth and stability flags
     const args = [
       ...chromium.args,
       '--disable-http2',
@@ -132,10 +135,66 @@ export class JumiaScraper extends BaseScraper {
     });
   }
 
-  private async checkBlocked(page: Page, status?: number) {
+  /**
+   * Injects scripts before any page JS runs to mask automation signals.
+   * Runs on every navigation in the context.
+   */
+  private async applyStealthToContext(context: BrowserContext): Promise<void> {
+    await context.addInitScript(() => {
+      // Most critical: hide webdriver flag checked by Cloudflare and other bot detectors
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+      });
+      // Headless Chrome omits window.chrome — add it so the page thinks it's a real browser
+      if (!(window as any).chrome) {
+        (window as any).chrome = {
+          runtime: {},
+          loadTimes: function () {},
+          csi: function () {},
+          app: {},
+        };
+      }
+      // Headless Chrome has zero plugins — fake a realistic set
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const ps = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ];
+          (ps as any).refresh = function () {};
+          return ps;
+        },
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en', 'ar'],
+      });
+    });
+  }
+
+  /**
+   * Detects bot blocking. For Cloudflare's "Just a moment" challenge page,
+   * waits up to 20s for the JS challenge to auto-resolve instead of throwing
+   * immediately — with stealth measures applied, this challenge typically passes.
+   */
+  private async checkBlocked(page: Page, status?: number): Promise<void> {
+    if (status === 403) {
+      throw new Error('Jumia blocked request (403 Forbidden)');
+    }
+
     const title = await page.title();
-    if (status === 403 || title.includes('Just a moment')) {
-      throw new Error('Jumia blocked request (Cloudflare)');
+    if (title.includes('Just a moment')) {
+      console.log('Cloudflare challenge detected on Jumia, waiting up to 20s for resolution...');
+      try {
+        await page.waitForFunction(
+          () => !document.title.includes('Just a moment'),
+          { timeout: 20000, polling: 500 },
+        );
+        console.log('Cloudflare challenge resolved on Jumia.');
+      } catch {
+        throw new Error('Jumia blocked: Cloudflare challenge did not resolve within timeout');
+      }
     }
   }
 

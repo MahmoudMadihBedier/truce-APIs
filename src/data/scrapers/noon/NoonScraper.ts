@@ -3,6 +3,8 @@ import {
   chromium as playwright,
   Browser,
   BrowserContext,
+  Page,
+  Response,
 } from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
@@ -26,25 +28,74 @@ export class NoonScraper extends BaseScraper {
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
+
+        // Capture JSON API responses that carry product listings
+        const capturedApiItems: any[] = [];
+        const handleResponse = async (response: Response) => {
+          const url = response.url();
+          const contentType = response.headers()['content-type'] || '';
+          if (!contentType.includes('application/json')) return;
+          // Only inspect URLs that look like catalog or search endpoints
+          if (!/catalog|search|product|listing|browse/i.test(url)) return;
+          try {
+            const body = await response.json();
+            const items: any[] =
+              body?.hits ||
+              body?.products ||
+              body?.catalog?.products ||
+              body?.result?.products ||
+              body?.data?.products ||
+              [];
+            if (items.length > 0) capturedApiItems.push(...items);
+          } catch {
+            // Ignore parse errors from non-product JSON responses
+          }
+        };
+        page.on('response', handleResponse);
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
-          waitUntil: 'load',
-          timeout: 60000,
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
         });
 
         if (response?.status() === 403) {
           throw new Error('Noon blocked request (403)');
         }
 
+        // Wait for JS rendering to settle
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {
+          // Continue with whatever content is loaded
+        }
+
         await page
-          .waitForSelector('.productContainer', { timeout: 25000 })
+          .waitForSelector('.productContainer', { timeout: 20000 })
           .catch(() => {});
 
-        // Noon often needs a small delay for the hydrate step
         await this.randomDelay(1000, 2000);
+        page.off('response', handleResponse);
 
+        // If API interception captured product data, normalize and return it
+        if (capturedApiItems.length > 0) {
+          console.log(`Noon: captured ${capturedApiItems.length} products from API responses`);
+          const products = capturedApiItems
+            .map((item) => this.normalizeApiProduct(item))
+            .filter((p): p is Product => p !== null && !!p.product_name);
+          if (products.length > 0) return products;
+        }
+
+        // Try embedded JSON data (Next.js __NEXT_DATA__ or window state)
+        const embeddedProducts = await this.extractFromEmbeddedData(page);
+        if (embeddedProducts && embeddedProducts.length > 0) {
+          console.log(`Noon: extracted ${embeddedProducts.length} products from embedded data`);
+          return embeddedProducts;
+        }
+
+        // Fall back to HTML parsing
         const content = await page.content();
         const $ = cheerio.load(content);
         const products: Product[] = [];
@@ -74,16 +125,20 @@ export class NoonScraper extends BaseScraper {
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'load',
-          timeout: 60000,
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
         });
-        await page.waitForSelector('.priceNow', { timeout: 10000 }).catch(() => {});
         if (response?.status() === 403) {
           throw new Error('Noon blocked request (403)');
         }
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {}
+        await page.waitForSelector('.priceNow', { timeout: 10000 }).catch(() => {});
 
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -102,7 +157,6 @@ export class NoonScraper extends BaseScraper {
     const executablePath = await chromium.executablePath();
     console.log(`Launching Noon browser with executablePath: ${executablePath}`);
 
-    // Add stealth and stability flags
     const args = [
       ...chromium.args,
       '--disable-http2',
@@ -134,6 +188,159 @@ export class NoonScraper extends BaseScraper {
         'Sec-CH-UA-Platform': '"Windows"',
       },
     });
+  }
+
+  /**
+   * Injects scripts before any page JS runs to mask automation signals.
+   * Runs on every navigation in the context.
+   */
+  private async applyStealthToContext(context: BrowserContext): Promise<void> {
+    await context.addInitScript(() => {
+      // Most critical: hide webdriver flag checked by Cloudflare and other bot detectors
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+      });
+      // Headless Chrome omits window.chrome — add it so the page thinks it's a real browser
+      if (!(window as any).chrome) {
+        (window as any).chrome = {
+          runtime: {},
+          loadTimes: function () {},
+          csi: function () {},
+          app: {},
+        };
+      }
+      // Headless Chrome has zero plugins — fake a realistic set
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const ps = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ];
+          (ps as any).refresh = function () {};
+          return ps;
+        },
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en', 'ar'],
+      });
+    });
+  }
+
+  /**
+   * Tries to pull product data from JavaScript state objects embedded in the
+   * page before HTML parsing. Noon is a React SPA that may expose initial state
+   * via window.__INITIAL_STATE__ or Next.js __NEXT_DATA__.
+   */
+  private async extractFromEmbeddedData(page: Page): Promise<Product[] | null> {
+    const items = await page.evaluate(() => {
+      const w = window as any;
+
+      // Redux / custom store state
+      const state =
+        w.__INITIAL_STATE__ ||
+        w.__STORE_STATE__ ||
+        w.__REDUX_STATE__ ||
+        w.__PRELOADED_STATE__ ||
+        null;
+      if (state) {
+        const products =
+          state?.catalog?.products ||
+          state?.listing?.products ||
+          state?.productList?.items ||
+          state?.search?.products ||
+          null;
+        if (products && Array.isArray(products) && products.length > 0) return products;
+      }
+
+      // Next.js server-rendered data
+      const nextEl = document.getElementById('__NEXT_DATA__');
+      if (nextEl?.textContent) {
+        try {
+          const nd = JSON.parse(nextEl.textContent);
+          const pp = nd?.props?.pageProps;
+          const ndProducts =
+            pp?.products ||
+            pp?.data?.products ||
+            pp?.initialData?.products ||
+            pp?.catalog?.products ||
+            pp?.categoryData?.products ||
+            null;
+          if (ndProducts && Array.isArray(ndProducts) && ndProducts.length > 0) return ndProducts;
+        } catch {}
+      }
+
+      return null;
+    });
+
+    if (!items || !Array.isArray(items) || items.length === 0) return null;
+
+    const products = items
+      .map((item: any) => this.normalizeApiProduct(item))
+      .filter((p): p is Product => p !== null && !!p.product_name);
+    return products.length > 0 ? products : null;
+  }
+
+  /**
+   * Normalizes a raw product object from API or embedded JSON into the unified schema.
+   */
+  private normalizeApiProduct(item: any): Product | null {
+    try {
+      const name = item?.name || item?.title || item?.product_name || '';
+      if (!name) return null;
+
+      const price =
+        typeof item?.price === 'object'
+          ? (item.price?.value ?? item.price?.now ?? item.price?.current ?? 0)
+          : Number(item?.price ?? item?.salePrice ?? item?.now_price ?? 0);
+
+      const oldPriceRaw = item?.oldPrice ?? item?.was_price ?? item?.regularPrice ?? null;
+      const oldPrice =
+        oldPriceRaw == null
+          ? null
+          : typeof oldPriceRaw === 'object'
+          ? (oldPriceRaw?.value ?? null)
+          : Number(oldPriceRaw);
+
+      const imageUrl =
+        item?.imageUrl ||
+        item?.image_url ||
+        item?.image ||
+        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
+        '';
+
+      const urlPath = item?.url || item?.productUrl || item?.slug || '';
+      const fullUrl = urlPath.startsWith('http')
+        ? urlPath
+        : urlPath
+        ? `${this.baseUrl}${urlPath}`
+        : '';
+
+      const productId = String(
+        item?.id || item?.sku || item?.product_id || urlPath.split('/').pop()?.split('?').shift() || 'unknown',
+      );
+
+      const inStock = item?.inStock ?? item?.is_available ?? item?.available ?? true;
+
+      return {
+        product_id: productId,
+        product_name: name,
+        product_category: 'Noon | Category',
+        brand_name: item?.brand || item?.brand_name || 'Unknown',
+        product_url: fullUrl,
+        current_price_egp: price || 0,
+        previous_price_egp: oldPrice,
+        product_image_url: imageUrl,
+        store_name: 'Noon Egypt',
+        discounts_offers: item?.discount || item?.promo || null,
+        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
+        location_city: 'Cairo',
+        last_updated_utc: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
