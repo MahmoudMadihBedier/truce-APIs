@@ -101,6 +101,8 @@ export class AmazonScraper extends BaseScraper {
       ...chromium.args,
       '--disable-http2',
       '--disable-blink-features=AutomationControlled',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
     ];
 
     return await playwright.launch({

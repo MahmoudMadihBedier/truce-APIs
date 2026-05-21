@@ -31,18 +31,18 @@ export class JumiaScraper extends BaseScraper {
 
         const url = `${this.baseUrl}${category}`;
         const response = await page.goto(url, {
-          waitUntil: 'networkidle',
+          waitUntil: 'load',
           timeout: 60000,
         });
 
         await this.checkBlocked(page, response?.status());
 
-        // Wait a bit for images to load as they might have the data
-        await this.randomDelay(1000, 3000);
-
         await page
           .waitForSelector('.prd._fb.col.c-prd', { timeout: 20000 })
           .catch(() => {});
+
+        // Wait a bit for images to load as they might have the data
+        await this.randomDelay(1000, 2000);
 
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -76,10 +76,11 @@ export class JumiaScraper extends BaseScraper {
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'networkidle',
+          waitUntil: 'load',
           timeout: 60000,
         });
         await this.checkBlocked(page, response?.status());
+        await page.waitForSelector('.prc', { timeout: 10000 }).catch(() => {});
 
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -102,6 +103,8 @@ export class JumiaScraper extends BaseScraper {
       ...chromium.args,
       '--disable-http2',
       '--disable-blink-features=AutomationControlled',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
     ];
 
     return await playwright.launch({
