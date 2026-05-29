@@ -3,6 +3,7 @@ import {
   chromium as playwright,
   Browser,
   BrowserContext,
+  Response,
 } from 'playwright-core';
 import * as cheerio from 'cheerio';
 import { Element } from 'domhandler';
@@ -21,42 +22,91 @@ export class NoonScraper extends BaseScraper {
    * @returns List of scraped products
    */
   async scrape(category = '/egypt-en/electronics/'): Promise<Product[]> {
+    const targetUrl = `${this.baseUrl}${category}`;
+
+    // ScraperAPI path with render=true: Noon is a React SPA so JS must execute
+    // to populate product listings. ScraperAPI handles this via headless browser
+    // on residential IPs, bypassing the cloud IP blocks Vercel faces.
+    const html = await this.fetchViaScraperApi(targetUrl, true);
+    if (html) {
+      const products = this.parseProductsFromHtml(html);
+      if (products.length > 0) {
+        console.log(`Noon: got ${products.length} products via ScraperAPI`);
+        return products;
+      }
+      // ScraperAPI rendered but found no product containers — try embedded state
+      const embedded = this.extractFromEmbeddedHtml(html);
+      if (embedded.length > 0) {
+        console.log(`Noon: got ${embedded.length} products from embedded data via ScraperAPI`);
+        return embedded;
+      }
+      console.warn('Noon: ScraperAPI returned HTML but found no products, falling back to browser');
+    }
+
+    // Playwright fallback (may be blocked from cloud IPs without a proxy)
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
-        const url = `${this.baseUrl}${category}`;
-        const response = await page.goto(url, {
-          waitUntil: 'load',
-          timeout: 60000,
+        // Capture JSON API responses that carry product listings
+        const capturedApiItems: any[] = [];
+        const handleResponse = async (response: Response) => {
+          const url = response.url();
+          const contentType = response.headers()['content-type'] || '';
+          if (!contentType.includes('application/json')) return;
+          if (!/catalog|search|product|listing|browse/i.test(url)) return;
+          try {
+            const body = await response.json();
+            const items: any[] =
+              body?.hits ||
+              body?.products ||
+              body?.catalog?.products ||
+              body?.result?.products ||
+              body?.data?.products ||
+              [];
+            if (items.length > 0) capturedApiItems.push(...items);
+          } catch {
+            // Ignore parse errors from non-product JSON
+          }
+        };
+        page.on('response', handleResponse);
+
+        const response = await page.goto(targetUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
         });
 
         if (response?.status() === 403) {
           throw new Error('Noon blocked request (403)');
         }
 
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {
+          // Continue with whatever content is loaded
+        }
+
         await page
-          .waitForSelector('.productContainer', { timeout: 25000 })
+          .waitForSelector('.productContainer', { timeout: 20000 })
           .catch(() => {});
 
-        // Noon often needs a small delay for the hydrate step
         await this.randomDelay(1000, 2000);
+        page.off('response', handleResponse);
+
+        if (capturedApiItems.length > 0) {
+          console.log(`Noon: captured ${capturedApiItems.length} products from API responses`);
+          const products = capturedApiItems
+            .map((item) => this.normalizeApiProduct(item))
+            .filter((p): p is Product => p !== null && !!p.product_name);
+          if (products.length > 0) return products;
+        }
 
         const content = await page.content();
-        const $ = cheerio.load(content);
-        const products: Product[] = [];
-
-        $('.productContainer').each((_, el) => {
-          const product = this.parseProduct($(el));
-          if (product && product.product_name) {
-            products.push(product);
-          }
-        });
-
-        return products;
+        return this.parseProductsFromHtml(content);
       } finally {
         if (browser) await browser.close();
       }
@@ -69,21 +119,37 @@ export class NoonScraper extends BaseScraper {
    * @returns Scraped product entity
    */
   async scrapeProduct(url: string): Promise<Product> {
+    const html = await this.fetchViaScraperApi(url, true);
+    if (html) {
+      const $ = cheerio.load(html);
+      const product = this.normalize($);
+      product.product_url = url;
+      product.product_id = url.split('/').pop()?.split('?').shift() || '';
+      if (product.product_name) {
+        console.log(`Noon: scraped product via ScraperAPI: ${product.product_name}`);
+        return product;
+      }
+    }
+
     return this.withRetry(async () => {
       let browser: Browser | null = null;
       try {
         browser = await this.launchBrowser();
         const context = await this.createContext(browser);
+        await this.applyStealthToContext(context);
         const page = await context.newPage();
 
         const response = await page.goto(url, {
-          waitUntil: 'load',
-          timeout: 60000,
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
         });
-        await page.waitForSelector('.priceNow', { timeout: 10000 }).catch(() => {});
         if (response?.status() === 403) {
           throw new Error('Noon blocked request (403)');
         }
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {}
+        await page.waitForSelector('.priceNow', { timeout: 10000 }).catch(() => {});
 
         const content = await page.content();
         const $ = cheerio.load(content);
@@ -97,12 +163,118 @@ export class NoonScraper extends BaseScraper {
     });
   }
 
+  private parseProductsFromHtml(html: string): Product[] {
+    const $ = cheerio.load(html);
+    const products: Product[] = [];
+    $('.productContainer').each((_, el) => {
+      const product = this.parseProduct($(el));
+      if (product && product.product_name) products.push(product);
+    });
+    return products;
+  }
+
+  /**
+   * Tries to extract products from embedded JavaScript state objects in the HTML.
+   * Noon may expose initial state via window.__INITIAL_STATE__ or Next.js __NEXT_DATA__.
+   */
+  private extractFromEmbeddedHtml(html: string): Product[] {
+    // Try Next.js __NEXT_DATA__
+    const nextMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextMatch) {
+      try {
+        const data = JSON.parse(nextMatch[1]);
+        const pp = data?.props?.pageProps;
+        const items: any[] | null =
+          pp?.products ||
+          pp?.data?.products ||
+          pp?.initialData?.products ||
+          pp?.catalog?.products ||
+          null;
+        if (items && Array.isArray(items) && items.length > 0) {
+          return items
+            .map((item: any) => this.normalizeApiProduct(item))
+            .filter((p): p is Product => p !== null && !!p.product_name);
+        }
+      } catch {}
+    }
+
+    // Try inline window state scripts
+    const stateMatch = html.match(/(?:__INITIAL_STATE__|__REDUX_STATE__|__PRELOADED_STATE__)\s*=\s*({[\s\S]*?});/);
+    if (stateMatch) {
+      try {
+        const state = JSON.parse(stateMatch[1]);
+        const items: any[] | null =
+          state?.catalog?.products ||
+          state?.listing?.products ||
+          state?.search?.products ||
+          null;
+        if (items && Array.isArray(items) && items.length > 0) {
+          return items
+            .map((item: any) => this.normalizeApiProduct(item))
+            .filter((p): p is Product => p !== null && !!p.product_name);
+        }
+      } catch {}
+    }
+
+    return [];
+  }
+
+  private normalizeApiProduct(item: any): Product | null {
+    try {
+      const name = item?.name || item?.title || item?.product_name || '';
+      if (!name) return null;
+      const price =
+        typeof item?.price === 'object'
+          ? (item.price?.value ?? item.price?.now ?? item.price?.current ?? 0)
+          : Number(item?.price ?? item?.salePrice ?? item?.now_price ?? 0);
+      const oldPriceRaw = item?.oldPrice ?? item?.was_price ?? item?.regularPrice ?? null;
+      const oldPrice =
+        oldPriceRaw == null
+          ? null
+          : typeof oldPriceRaw === 'object'
+          ? (oldPriceRaw?.value ?? null)
+          : Number(oldPriceRaw);
+      const imageUrl =
+        item?.imageUrl ||
+        item?.image_url ||
+        item?.image ||
+        (Array.isArray(item?.images) && item.images.length > 0 ? item.images[0] : '') ||
+        '';
+      const urlPath = item?.url || item?.productUrl || item?.slug || '';
+      const fullUrl = urlPath.startsWith('http')
+        ? urlPath
+        : urlPath
+        ? `${this.baseUrl}${urlPath}`
+        : '';
+      const productId = String(
+        item?.id || item?.sku || item?.product_id || urlPath.split('/').pop()?.split('?').shift() || 'unknown',
+      );
+      const inStock = item?.inStock ?? item?.is_available ?? item?.available ?? true;
+      return {
+        product_id: productId,
+        product_name: name,
+        product_category: 'Noon | Category',
+        brand_name: item?.brand || item?.brand_name || 'Unknown',
+        product_url: fullUrl,
+        current_price_egp: price || 0,
+        previous_price_egp: oldPrice,
+        product_image_url: imageUrl,
+        store_name: 'Noon Egypt',
+        discounts_offers: item?.discount || item?.promo || null,
+        availability_status: inStock === false ? 'Out of Stock' : 'In Stock',
+        location_city: 'Cairo',
+        last_updated_utc: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private async launchBrowser(): Promise<Browser> {
     this.setupEnvironment();
     const executablePath = await chromium.executablePath();
     console.log(`Launching Noon browser with executablePath: ${executablePath}`);
 
-    // Add stealth and stability flags
     const args = [
       ...chromium.args,
       '--disable-http2',
@@ -133,6 +305,40 @@ export class NoonScraper extends BaseScraper {
         'Sec-CH-UA-Mobile': '?0',
         'Sec-CH-UA-Platform': '"Windows"',
       },
+    });
+  }
+
+  /**
+   * Injects scripts before any page JS runs to mask automation signals.
+   */
+  private async applyStealthToContext(context: BrowserContext): Promise<void> {
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+      });
+      if (!(window as any).chrome) {
+        (window as any).chrome = {
+          runtime: {},
+          loadTimes: function () {},
+          csi: function () {},
+          app: {},
+        };
+      }
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const ps = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ];
+          (ps as any).refresh = function () {};
+          return ps;
+        },
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en', 'ar'],
+      });
     });
   }
 

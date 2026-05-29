@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { IProductRepository } from '../domain/repositories/IProductRepository';
+import { MarketRatesService } from '../services/MarketRatesService';
 
 /**
  * Service to orchestrate the scraping process across multiple stores and categories.
@@ -95,6 +96,14 @@ export class ScraperOrchestrator {
 
     // Ensure we don't have trailing slashes
     baseUrl = baseUrl.replace(/\/$/, '');
+
+    // Fetch and store market rates (USD/EGP + gold) at the start of each scrape run
+    try {
+      const ratesService = new MarketRatesService();
+      await ratesService.fetchAndStore();
+    } catch (err) {
+      console.error('Failed to fetch market rates:', (err as Error).message);
+    }
 
     const tasks: Promise<void>[] = [];
 
